@@ -1,103 +1,141 @@
  from flask import Flask
 import threading
 import time
-import requests
-import datetime
 import os
+import requests
+import hmac
+import hashlib
+import json
+from datetime import datetime
 
 app = Flask(__name__)
 
-# ====== ตั้งค่าพื้นฐาน ======
+# ========== CONFIG ==========
 API_KEY = 'EmgLSyDgCyWym11Xcjq8tLeDaWuszl8n3PsOw9SYypVqlCHulrKxvRxNctCq121X'
 API_SECRET = '2jqYRrjyO8RTOOHT5yKNdtHuFNmS0OcRmOrB7Tj9wDnRaTjwspCxfkPxqJUL3GOJ'
-
 TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
 TELEGRAM_CHAT_ID = '8104629569'
 
 symbol = 'BTCUSDT'
-interval = '15m'
+leverage = 15
+trade_percent = 0.3  # 30%
 base_url = 'https://fapi.binance.com'
 
 headers = {
     'X-MBX-APIKEY': API_KEY
 }
 
-
-# ====== ส่งข้อความไป Telegram ======
-def notify_telegram(message):
+# ========== UTIL ==========
+def notify_telegram(msg):
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
-    data = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
+    data = {'chat_id': TELEGRAM_CHAT_ID, 'text': msg}
     try:
         requests.post(url, data=data)
     except:
         pass
 
+def get_price():
+    url = f'{base_url}/fapi/v1/ticker/price?symbol={symbol}'
+    r = requests.get(url)
+    return float(r.json()['price'])
 
-# ====== โหลดกราฟ M15 ======
-def fetch_klines(symbol="BTCUSDT", interval="15m", limit=100):
-    url = f'https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}'
-    response = requests.get(url)
-    data = response.json()
-    klines = []
-    for k in data:
-        klines.append({
-            "time": datetime.datetime.fromtimestamp(k[0] / 1000),
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4])
-        })
-    return klines
+def sign_request(params):
+    query = '&'.join([f"{key}={params[key]}" for key in params])
+    signature = hmac.new(API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
+    return f"{query}&signature={signature}"
 
+def get_balance():
+    url = f'{base_url}/fapi/v2/balance'
+    r = requests.get(url, headers=headers)
+    for b in r.json():
+        if b['asset'] == 'USDT':
+            return float(b['availableBalance'])
+    return 0
 
-# ====== วิเคราะห์ CHoCH และหา Fibonacci ======
-def find_choch_and_fib():
-    candles = fetch_klines()
-    last = candles[-1]
-    prev = candles[-2]
+def set_leverage():
+    url = f'{base_url}/fapi/v1/leverage'
+    data = {'symbol': symbol, 'leverage': leverage}
+    r = requests.post(url, headers=headers, params=data)
 
-    if last['high'] > prev['high'] and last['low'] > prev['low']:
-        trend = "up"
-        fib_low = min([c['low'] for c in candles[-10:]])
-        fib_high = max([c['high'] for c in candles[-10:]])
-        fib_618 = fib_high - (fib_high - fib_low) * 0.618
-        fib_786 = fib_high - (fib_high - fib_low) * 0.786
+def place_order(side, quantity, entry_price):
+    url = f'{base_url}/fapi/v1/order'
+    tp_price = round(entry_price * 1.3, 2) if side == 'BUY' else round(entry_price * 0.7, 2)
+    sl_price = round(entry_price * 0.88, 2) if side == 'BUY' else round(entry_price * 1.12, 2)
 
-        notify_telegram(f"พบสัญญาณขาขึ้น (CHoCH)\nFibo Buy Zone: {round(fib_786,2)} - {round(fib_618,2)}")
-        return "buy", fib_786, fib_618
+    # ส่งคำสั่ง Market
+    data = {
+        'symbol': symbol,
+        'side': side,
+        'type': 'MARKET',
+        'quantity': quantity,
+        'timestamp': int(time.time() * 1000)
+    }
+    signed = sign_request(data)
+    r = requests.post(f'{base_url}/fapi/v1/order?{signed}', headers=headers)
 
-    elif last['low'] < prev['low'] and last['high'] < prev['high']:
-        trend = "down"
-        fib_high = max([c['high'] for c in candles[-10:]])
-        fib_low = min([c['low'] for c in candles[-10:]])
-        fib_618 = fib_low + (fib_high - fib_low) * 0.618
-        fib_786 = fib_low + (fib_high - fib_low) * 0.786
+    # ส่ง TP/SL
+    stop_side = 'SELL' if side == 'BUY' else 'BUY'
+    tp = {
+        'symbol': symbol,
+        'side': stop_side,
+        'type': 'TAKE_PROFIT_MARKET',
+        'stopPrice': tp_price,
+        'closePosition': True,
+        'timeInForce': 'GTC',
+        'timestamp': int(time.time() * 1000)
+    }
+    sl = {
+        'symbol': symbol,
+        'side': stop_side,
+        'type': 'STOP_MARKET',
+        'stopPrice': sl_price,
+        'closePosition': True,
+        'timeInForce': 'GTC',
+        'timestamp': int(time.time() * 1000)
+    }
+    requests.post(f'{base_url}/fapi/v1/order?{sign_request(tp)}', headers=headers)
+    requests.post(f'{base_url}/fapi/v1/order?{sign_request(sl)}', headers=headers)
 
-        notify_telegram(f"พบสัญญาณขาลง (CHoCH)\nFibo Sell Zone: {round(fib_618,2)} - {round(fib_786,2)}")
-        return "sell", fib_618, fib_786
+    notify_telegram(f"เปิดออเดอร์ {side}\nราคา: {entry_price}\nTP: {tp_price}\nSL: {sl_price}")
 
-    return None, None, None
+# ========== STRATEGY ==========
+def check_trade_condition():
+    # NOTE: ตัวอย่างนี้เป็นแค่ MOCK — ต้องแทนที่ด้วยการวิเคราะห์จริงจากแท่งเทียน M15 และ M5
+    price = get_price()
+    now = datetime.utcnow().minute
+    if now % 15 == 0:  # แกล้งให้เปิดทุก 15 นาทีเพื่อทดสอบ
+        return {
+            'side': 'BUY' if int(price) % 2 == 0 else 'SELL',
+            'entry_price': price
+        }
+    return None
 
-
-# ====== รันบอทใน Background ======
+# ========== MAIN BOT ==========
 def run_bot():
-    notify_telegram("บอทเริ่มทำงานแล้ว!")
+    notify_telegram("บอทเริ่มทำงานแล้ว")
+    set_leverage()
     while True:
-        side, fib1, fib2 = find_choch_and_fib()
-        # (ยังไม่เปิดออเดอร์จริงในขั้นตอนนี้)
-        time.sleep(300)  # วิเคราะห์ทุก 5 นาที
+        try:
+            signal = check_trade_condition()
+            if signal:
+                balance = get_balance()
+                entry_price = signal['entry_price']
+                qty = round((balance * trade_percent * leverage) / entry_price, 3)
+                place_order(signal['side'], qty, entry_price)
+                time.sleep(3600)  # พัก 1 ชม. หลังเทรด
+            else:
+                print("ไม่มีสัญญาณเทรด...")
+        except Exception as e:
+            notify_telegram(f"Error: {str(e)}")
+        time.sleep(60)
 
-
-# ====== หน้าเว็บหลัก ======
+# ========== FLASK ==========
 @app.route('/')
 def home():
-    return 'Crypto Bot is running!'
+    return "Crypto Bot is running!"
 
-
-# ====== Main ======
 if __name__ == '__main__':
     bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
-
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
