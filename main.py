@@ -1,12 +1,11 @@
- from flask import Flask
+from flask import Flask
 import threading
-import time
-import os
 import requests
-import hmac
-import hashlib
+import time
+import hmac, hashlib
 import json
-from datetime import datetime
+import time
+import urllib.parse
 
 app = Flask(__name__)
 
@@ -18,14 +17,15 @@ TELEGRAM_CHAT_ID = '8104629569'
 
 symbol = 'BTCUSDT'
 leverage = 15
-trade_percent = 0.3  # 30%
+risk_percent = 30  # % ต่อไม้
+SL_PERCENT = 12
+TP_PERCENT = 30
+
 base_url = 'https://fapi.binance.com'
+headers = {'X-MBX-APIKEY': API_KEY}
 
-headers = {
-    'X-MBX-APIKEY': API_KEY
-}
 
-# ========== UTIL ==========
+# ========== UTILITIES ==========
 def notify_telegram(msg):
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
     data = {'chat_id': TELEGRAM_CHAT_ID, 'text': msg}
@@ -34,100 +34,79 @@ def notify_telegram(msg):
     except:
         pass
 
-def get_price():
-    url = f'{base_url}/fapi/v1/ticker/price?symbol={symbol}'
-    r = requests.get(url)
-    return float(r.json()['price'])
+def get_timestamp():
+    return int(time.time() * 1000)
 
-def sign_request(params):
-    query = '&'.join([f"{key}={params[key]}" for key in params])
-    signature = hmac.new(API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
-    return f"{query}&signature={signature}"
+def sign(params):
+    query_string = urllib.parse.urlencode(params)
+    signature = hmac.new(API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+    return signature
+
+def get_price():
+    url = f"{base_url}/fapi/v1/ticker/price?symbol={symbol}"
+    res = requests.get(url)
+    return float(res.json()['price'])
 
 def get_balance():
-    url = f'{base_url}/fapi/v2/balance'
-    r = requests.get(url, headers=headers)
-    for b in r.json():
-        if b['asset'] == 'USDT':
-            return float(b['availableBalance'])
+    url = f"{base_url}/fapi/v2/account"
+    params = {'timestamp': get_timestamp()}
+    params['signature'] = sign(params)
+    res = requests.get(url, headers=headers, params=params)
+    assets = res.json().get("assets", [])
+    for asset in assets:
+        if asset['asset'] == 'USDT':
+            return float(asset['availableBalance'])
     return 0
 
-def set_leverage():
-    url = f'{base_url}/fapi/v1/leverage'
-    data = {'symbol': symbol, 'leverage': leverage}
-    r = requests.post(url, headers=headers, params=data)
+def open_order(side, qty, entry_price):
+    url = f"{base_url}/fapi/v1/order"
+    sl_price = entry_price * (1 - SL_PERCENT/100) if side == "BUY" else entry_price * (1 + SL_PERCENT/100)
+    tp_price = entry_price * (1 + TP_PERCENT/100) if side == "BUY" else entry_price * (1 - TP_PERCENT/100)
 
-def place_order(side, quantity, entry_price):
-    url = f'{base_url}/fapi/v1/order'
-    tp_price = round(entry_price * 1.3, 2) if side == 'BUY' else round(entry_price * 0.7, 2)
-    sl_price = round(entry_price * 0.88, 2) if side == 'BUY' else round(entry_price * 1.12, 2)
-
-    # ส่งคำสั่ง Market
-    data = {
+    params = {
         'symbol': symbol,
         'side': side,
         'type': 'MARKET',
-        'quantity': quantity,
-        'timestamp': int(time.time() * 1000)
+        'quantity': round(qty, 3),
+        'timestamp': get_timestamp()
     }
-    signed = sign_request(data)
-    r = requests.post(f'{base_url}/fapi/v1/order?{signed}', headers=headers)
+    params['signature'] = sign(params)
+    r = requests.post(url, headers=headers, params=params)
+    notify_telegram(f"{side} Order Executed: {qty} BTC at ${entry_price:.2f}")
+    notify_telegram(f"TP: {tp_price:.2f}, SL: {sl_price:.2f}")
+    return r.json()
 
-    # ส่ง TP/SL
-    stop_side = 'SELL' if side == 'BUY' else 'BUY'
-    tp = {
+def set_leverage():
+    url = f"{base_url}/fapi/v1/leverage"
+    params = {
         'symbol': symbol,
-        'side': stop_side,
-        'type': 'TAKE_PROFIT_MARKET',
-        'stopPrice': tp_price,
-        'closePosition': True,
-        'timeInForce': 'GTC',
-        'timestamp': int(time.time() * 1000)
+        'leverage': leverage,
+        'timestamp': get_timestamp()
     }
-    sl = {
-        'symbol': symbol,
-        'side': stop_side,
-        'type': 'STOP_MARKET',
-        'stopPrice': sl_price,
-        'closePosition': True,
-        'timeInForce': 'GTC',
-        'timestamp': int(time.time() * 1000)
-    }
-    requests.post(f'{base_url}/fapi/v1/order?{sign_request(tp)}', headers=headers)
-    requests.post(f'{base_url}/fapi/v1/order?{sign_request(sl)}', headers=headers)
+    params['signature'] = sign(params)
+    requests.post(url, headers=headers, params=params)
 
-    notify_telegram(f"เปิดออเดอร์ {side}\nราคา: {entry_price}\nTP: {tp_price}\nSL: {sl_price}")
-
-# ========== STRATEGY ==========
-def check_trade_condition():
-    # NOTE: ตัวอย่างนี้เป็นแค่ MOCK — ต้องแทนที่ด้วยการวิเคราะห์จริงจากแท่งเทียน M15 และ M5
-    price = get_price()
-    now = datetime.utcnow().minute
-    if now % 15 == 0:  # แกล้งให้เปิดทุก 15 นาทีเพื่อทดสอบ
-        return {
-            'side': 'BUY' if int(price) % 2 == 0 else 'SELL',
-            'entry_price': price
-        }
-    return None
-
-# ========== MAIN BOT ==========
-def run_bot():
-    notify_telegram("บอทเริ่มทำงานแล้ว")
+# ========== MAIN TRADING LOGIC ==========
+def trade_bot():
     set_leverage()
+    notify_telegram("บอทเทรดเริ่มทำงานแล้ว!")
     while True:
         try:
-            signal = check_trade_condition()
-            if signal:
-                balance = get_balance()
-                entry_price = signal['entry_price']
-                qty = round((balance * trade_percent * leverage) / entry_price, 3)
-                place_order(signal['side'], qty, entry_price)
-                time.sleep(3600)  # พัก 1 ชม. หลังเทรด
-            else:
-                print("ไม่มีสัญญาณเทรด...")
+            # ดึงราคาปัจจุบัน
+            price = get_price()
+            balance = get_balance()
+            usdt_risk = (balance * risk_percent) / 100
+            qty = round(usdt_risk * leverage / price, 3)
+
+            # ----------- ตัวอย่างจำลองการเข้าเทรด -------------
+            if int(time.time()) % 120 == 0:  # สมมุติเข้าเทรดทุก 2 นาที (เปลี่ยนเป็น logic จริงได้)
+                side = "BUY" if int(time.time()) % 4 == 0 else "SELL"
+                open_order(side, qty, price)
+
+            time.sleep(10)
         except Exception as e:
-            notify_telegram(f"Error: {str(e)}")
-        time.sleep(60)
+            notify_telegram(f"ERROR: {str(e)}")
+            time.sleep(30)
 
 # ========== FLASK ==========
 @app.route('/')
@@ -135,7 +114,6 @@ def home():
     return "Crypto Bot is running!"
 
 if __name__ == '__main__':
-    bot_thread = threading.Thread(target=run_bot)
+    bot_thread = threading.Thread(target=trade_bot)
     bot_thread.start()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=10000)
