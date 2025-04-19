@@ -29,17 +29,20 @@ def get_price(symbol):
     }
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
         data = response.json()
 
-        if 'price' in data:
-            return float(data['price'])
+        # DEBUG LOG:
+        print(f"[DEBUG] Binance Response: {data}")
+
+        price_str = data.get('price')
+        if price_str is not None:
+            return float(price_str)
         else:
-            notify_telegram(f"[ERROR] ไม่พบ key 'price': {data}")
+            notify_telegram(f"[ERROR] ไม่พบราคาจาก Binance: {data}")
             return None
 
-    except requests.exceptions.RequestException as e:
-        notify_telegram(f"[ERROR] ดึงราคา Binance ล้มเหลว:\n{str(e)}")
+    except Exception as e:
+        notify_telegram(f"[ERROR] ดึงราคาไม่สำเร็จ:\n{str(e)}")
         return None
 
 # === ฟังก์ชันรันบอท ===
