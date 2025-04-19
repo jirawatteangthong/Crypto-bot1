@@ -1,43 +1,36 @@
 from flask import Flask
 import threading
 import requests
-import time
 import os
+import time
 
 app = Flask(__name__)
 
-# ========== ตั้งค่า Telegram ==========
+# Telegram config
 TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
-TELEGRAM_CHAT_ID = '8104629569'  # แก้เป็น chat_id ของคุณ (อย่าลืมใช้แบบเป็น string)
+TELEGRAM_CHAT_ID = '8104629569'
 
-# ========== ฟังก์ชันส่งข้อความไป Telegram ==========
 def notify_telegram(message):
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
     data = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
     try:
-        response = requests.post(url, data=data)
-        print("Telegram Response:", response.json())  # DEBUG
+        r = requests.post(url, data=data)
+        print("Telegram response:", r.text)
     except Exception as e:
-        print("Telegram Error:", str(e))
+        print("Error sending Telegram:", e)
 
-
-# ========== ฟังก์ชันบอทรัน background ==========
 def run_bot():
-    notify_telegram("Bot started and running on background thread!")
+    notify_telegram("Bot Started! รันสำเร็จแล้ว!")
     while True:
-        print("บอทกำลังทำงาน... (คุณสามารถใส่ logic เทรดตรงนี้)")
+        print("กำลังทำงาน...")
         time.sleep(10)
 
-# ========== Flask Route ==========
 @app.route('/')
 def home():
-    return "Crypto Bot is running!"
+    return 'Crypto Bot is running!'
 
-# ========== เริ่มทำงาน ==========
 if __name__ == '__main__':
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-
-    port = int(os.environ.get('PORT', 5000))
+    thread = threading.Thread(target=run_bot)
+    thread.start()
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
