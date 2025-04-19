@@ -32,11 +32,18 @@ def get_price(symbol):
     url = f"{base_url}/fapi/v1/ticker/price?symbol={symbol}"
     try:
         res = requests.get(url, timeout=10)
+        res.raise_for_status()
         data = res.json()
+
+        # Debug log เผื่อ API กลับมาเป็นข้อความแทน
+        if 'price' not in data:
+            notify_telegram(f"[ERROR] ไม่พบราคาในข้อมูลที่ได้: {data}")
+            return None
+
         price = float(data['price'])
         return price
     except Exception as e:
-        notify_telegram(f"ERROR: ดึงราคาไม่สำเร็จ - {str(e)}")
+        notify_telegram(f"[ERROR] ดึงราคาไม่สำเร็จ: {str(e)}")
         return None
 
 # ====== ฟังก์ชันหลักของ Bot ======
@@ -45,8 +52,10 @@ def run_bot():
     while True:
         price = get_price(symbol)
         if price:
-            notify_telegram(f"[Price Update] BTCUSDT = {price:.2f} USDT")
-        time.sleep(300)  # แจ้งราคาทุก 5 นาที (300 วินาที)
+            notify_telegram(f"[ราคา BTC/USDT] = {price:.2f} USDT")
+        else:
+            notify_telegram("ไม่สามารถดึงราคาจาก Binance ได้")
+        time.sleep(300)
 
 # ====== หน้าเว็บหลัก สำหรับ Render ======
 @app.route('/')
