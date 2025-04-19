@@ -29,21 +29,29 @@ def notify_telegram(message):
 
 # ====== ดึงราคาจาก Binance ======
 def get_price(symbol):
-    url = f"{base_url}/fapi/v1/ticker/price?symbol={symbol}"
+    url = f"https://fapi.binance.com/fapi/v1/ticker/price"
     try:
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
 
-        # Debug log เผื่อ API กลับมาเป็นข้อความแทน
-        if 'price' not in data:
-            notify_telegram(f"[ERROR] ไม่พบราคาในข้อมูลที่ได้: {data}")
+        # ตรวจสอบว่าข้อมูลเป็น list หรือ dict
+        if isinstance(data, list):
+            for item in data:
+                if item['symbol'] == symbol:
+                    return float(item['price'])
+            notify_telegram(f"[ERROR] ไม่พบ symbol {symbol} ในข้อมูลทั้งหมด")
             return None
 
-        price = float(data['price'])
-        return price
+        elif isinstance(data, dict) and 'price' in data:
+            return float(data['price'])
+
+        else:
+            notify_telegram(f"[ERROR] ไม่พบข้อมูลราคาใน response: {data}")
+            return None
+
     except Exception as e:
-        notify_telegram(f"[ERROR] ดึงราคาไม่สำเร็จ: {str(e)}")
+        notify_telegram(f"[ERROR] ดึงราคาล้มเหลว: {str(e)}")
         return None
 
 # ====== ฟังก์ชันหลักของ Bot ======
