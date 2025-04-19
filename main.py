@@ -4,70 +4,62 @@ import time
 import requests
 import os
 
+# === ตั้งค่า Telegram ===
+TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
+TELEGRAM_CHAT_ID = "8104629569"
+
+# === ตั้งค่า Binance Futures ===
+SYMBOL = "BTCUSDT"
+
+# === Flask App ===
 app = Flask(__name__)
 
-# ========== ตั้งค่า ==========
-
-API_KEY = 'EmgLSyDgCyWym11Xcjq8tLeDaWuszl8n3PsOw9SYypVqlCHulrKxvRxNctCq121X'
-API_SECRET = '2jqYRrjyO8RTOOHT5yKNdtHuFNmS0OcRmOrB7Tj9wDnRaTjwspCxfkPxqJUL3GOJ'
-TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
-TELEGRAM_CHAT_ID = '8104629569'
-SYMBOL = 'BTCUSDT'
-LEVERAGE = 15
-
-# ========== แจ้งเตือนผ่าน Telegram ==========
-
 def notify_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
     try:
-        requests.post(url, data=data)
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        requests.post(url, data=payload)
     except Exception as e:
-        print(f"Telegram Error: {e}")
-
-# ========== ฟังก์ชันดึงราคาจาก Binance Futures ==========
+        print(f"[ERROR] ไม่สามารถแจ้ง Telegram ได้: {e}")
 
 def get_price(symbol):
     url = f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}"
     headers = {
-        'User-Agent': 'Mozilla/5.0'  # เพิ่ม header เพื่อให้ Binance ยอมรับ
+        'User-Agent': 'Mozilla/5.0'
     }
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.raise_for_status()
-        data = res.json()
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
         if 'price' in data:
             return float(data['price'])
         else:
-            notify_telegram(f"[ERROR] ไม่พบ key 'price' ใน response: {data}")
+            notify_telegram(f"[ERROR] ไม่พบ key 'price': {data}")
             return None
-    except Exception as e:
-        notify_telegram(f"[ERROR] ดึงราคาล้มเหลว: {str(e)}")
+
+    except requests.exceptions.RequestException as e:
+        notify_telegram(f"[ERROR] ดึงราคา Binance ล้มเหลว:\n{str(e)}")
         return None
 
-# ========== ฟังก์ชันรันบอท ==========
-
+# === ฟังก์ชันรันบอท ===
 def run_bot():
-    notify_telegram("✅ Bot started and running!")
+    notify_telegram("บอทเริ่มทำงานแล้ว!")
+
     while True:
         price = get_price(SYMBOL)
-        if price:
-            notify_telegram(f"ราคาล่าสุด {SYMBOL} = {price}")
-        else:
-            notify_telegram("❌ ไม่สามารถดึงราคาจาก Binance ได้")
-        
-        time.sleep(60)  # รอ 60 วินาทีต่อรอบ
 
-# ========== Home page สำหรับ Flask ==========
+        if price:
+            print(f"[INFO] BTCUSDT = {price}")
+            # คุณสามารถต่อยอดกลยุทธ์เทรดจริงได้ที่นี่
+        else:
+            print("[ERROR] ดึงราคาล้มเหลว")
+
+        time.sleep(30)
 
 @app.route('/')
 def home():
     return "Crypto Bot is running!"
-
-# ========== เริ่มต้น Flask และ Thread ของ Bot ==========
 
 if __name__ == '__main__':
     bot_thread = threading.Thread(target=run_bot)
