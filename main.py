@@ -3,70 +3,107 @@ import threading
 import time
 import requests
 import os
+import hmac
+import hashlib
+import base64
+import json
+import datetime
 
+# === ตั้งค่า OKX API ===
+OKX_API_KEY = 'a279dbed-ae3c-44c2-b0c4-fcf1ff6e76cb'
+OKX_SECRET_KEY = 'FA68643E5A176C00AB09637CBC5DA82E'
+OKX_PASSPHRASE = 'Jirawat1-'
+
+# === Telegram ===
+TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
+TELEGRAM_CHAT_ID = '8104629569'
+
+# === สัญลักษณ์ที่เทรด ===
+SYMBOL = 'BTC-USDT-SWAP'
+
+# === Flask App ===
 app = Flask(__name__)
 
-# === ตั้งค่า Telegram ===
-TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
-TELEGRAM_CHAT_ID = "8104629569"
-
-# === ตั้งค่า Binance Futures ===
-SYMBOL = "BTCUSDT"
-BINANCE_FUTURES_URL = f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={SYMBOL}"
-
-# === ฟังก์ชันส่งแจ้งเตือน Telegram ===
 def notify_telegram(message):
+    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+    data = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        response = requests.post(url, data=payload)
-        if not response.ok:
-            print("[Telegram Error]", response.text)
+        requests.post(url, data=data)
     except Exception as e:
-        print(f"[ERROR] แจ้งเตือนไม่สำเร็จ: {e}")
+        print(f"[ERROR] Telegram: {e}")
 
-# === ฟังก์ชันดึงราคาจาก Binance ===
+# === สร้าง signature ===
+def generate_signature(timestamp, method, request_path, body):
+    if not body:
+        body = ""
+    message = f"{timestamp}{method.upper()}{request_path}{body}"
+    mac = hmac.new(OKX_SECRET_KEY.encode(), msg=message.encode(), digestmod=hashlib.sha256)
+    return base64.b64encode(mac.digest()).decode()
+
+# === ดึงราคาล่าสุดจาก OKX ===
 def get_price():
+    url = 'https://www.okx.com/api/v5/market/ticker?instId=' + SYMBOL
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0'
-        }
-        response = requests.get(BINANCE_FUTURES_URL, headers=headers, timeout=10)
+        response = requests.get(url)
         data = response.json()
-
-        print(f"[DEBUG] Binance Response: {data}")
-
-        if 'price' in data:
-            return float(data['price'])
-        else:
-            notify_telegram(f"[ERROR] ไม่พบข้อมูลราคา: {data}")
-            return None
+        return float(data['data'][0]['last'])
     except Exception as e:
-        notify_telegram(f"[ERROR] ดึงราคาไม่สำเร็จ: {e}")
+        notify_telegram(f"[ERROR] ดึงราคาล้มเหลว: {e}")
         return None
 
-# === ฟังก์ชันรันบอท ===
-def run_bot():
-    notify_telegram("บอทเริ่มทำงานแล้ว!")
+# === ส่งคำสั่งเทรด ===
+def send_order(side, size):
+    url = 'https://www.okx.com/api/v5/trade/order'
+    timestamp = datetime.datetime.utcnow().isoformat("T", "milliseconds") + "Z"
+    body = json.dumps({
+        "instId": SYMBOL,
+        "tdMode": "cross",
+        "side": side,
+        "ordType": "market",
+        "sz": str(size)
+    })
+
+    headers = {
+        'OK-ACCESS-KEY': OKX_API_KEY,
+        'OK-ACCESS-SIGN': generate_signature(timestamp, 'POST', '/api/v5/trade/order', body),
+        'OK-ACCESS-TIMESTAMP': timestamp,
+        'OK-ACCESS-PASSPHRASE': OKX_PASSPHRASE,
+        'Content-Type': 'application/json'
+    }
+
+    try:
+        response = requests.post(url, headers=headers, data=body)
+        res = response.json()
+        notify_telegram(f"[TRADE] สั่ง {side.upper()} OKX: {res}")
+    except Exception as e:
+        notify_telegram(f"[ERROR] ส่งคำสั่งเทรดล้มเหลว: {e}")
+
+# === ฟังก์ชันหลักบอท ===
+def trading_bot():
+    notify_telegram("บอท OKX เริ่มทำงานแล้ว!")
 
     while True:
         price = get_price()
         if price:
-            print(f"[INFO] BTCUSDT = {price}")
+            print(f"[INFO] ราคาล่าสุด {SYMBOL}: {price}")
+            # TODO: เพิ่ม logic กลยุทธ์ M15 CHoCH + Fibo + M5 CHoCH ที่นี่
+            # เช่น ตรวจแนวโน้มจากแท่งเทียน → วัด Fibonacci → หาสัญญาณ CHoCH จาก M5
+            # ถ้าพบสัญญาณ: send_order('buy' หรือ 'sell', size)
+
         else:
-            print("[ERROR] ไม่สามารถดึงราคา BTCUSDT ได้")
+            print("[ERROR] ดึงราคาไม่ได้")
 
         time.sleep(30)
 
-# === Web Route ===
 @app.route('/')
 def home():
-    return "Crypto Bot is running!"
+    return "OKX Crypto Bot is running!"
 
-# === เริ่ม Flask และ Thread Background ===
 if __name__ == '__main__':
-    bot_thread = threading.Thread(target=run_bot)
+    # รัน Background Bot Thread
+    bot_thread = threading.Thread(target=trading_bot)
     bot_thread.start()
 
-    port = int(os.environ.get('PORT', 10000))
+    # รัน Flask ให้ Render รู้ว่าบอทยังทำงานอยู่
+    port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
