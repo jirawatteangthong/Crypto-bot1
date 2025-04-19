@@ -21,7 +21,6 @@ def notify_telegram(message):
         requests.post(url, data=payload)
     except Exception as e:
         print(f"[ERROR] ไม่สามารถแจ้ง Telegram ได้: {e}")
-
 def get_price(symbol):
     url = f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}"
     headers = {
@@ -29,10 +28,11 @@ def get_price(symbol):
     }
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        data = response.json()
 
-        # DEBUG LOG:
-        print(f"[DEBUG] Binance Response: {data}")
+        print(f"[DEBUG] HTTP Status Code: {response.status_code}")
+        print(f"[DEBUG] Raw Response Text: {response.text}")
+
+        data = response.json()
 
         price_str = data.get('price')
         if price_str is not None:
@@ -44,23 +44,32 @@ def get_price(symbol):
     except Exception as e:
         notify_telegram(f"[ERROR] ดึงราคาไม่สำเร็จ:\n{str(e)}")
         return None
+def get_price(symbol, retries=3):
+    url = f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                print(f"[WARN] Attempt {attempt+1}: Status Code {response.status_code}")
+                time.sleep(1)
+                continue
 
-# === ฟังก์ชันรันบอท ===
-def run_bot():
-    notify_telegram("บอทเริ่มทำงานแล้ว!")
+            data = response.json()
+            price_str = data.get('price')
 
-    while True:
-        price = get_price(SYMBOL)
+            if price_str is not None:
+                return float(price_str)
+            else:
+                notify_telegram(f"[ERROR] ไม่พบราคาจาก Binance: {data}")
+                return None
+        except Exception as e:
+            print(f"[ERROR] Attempt {attempt+1}: {e}")
+            time.sleep(1)
 
-        if price:
-            print(f"[INFO] BTCUSDT = {price}")
-            # คุณสามารถต่อยอดกลยุทธ์เทรดจริงได้ที่นี่
-        else:
-            print("[ERROR] ดึงราคาล้มเหลว")
-
-        time.sleep(30)
-
-@app.route('/')
+    notify_telegram("[ERROR] ดึงราคาไม่สำเร็จหลังจากพยายามหลายครั้ง")
+    return None
 def home():
     return "Crypto Bot is running!"
 
