@@ -99,7 +99,12 @@ def trade_loop():
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
     global bot_active
-    msg = request.json["message"]["text"].lower()
+    data = request.json
+    if "message" not in data or "text" not in data["message"]:
+        return "ignored"
+
+    msg = data["message"]["text"].lower()
+
     if "stop" in msg:
         bot_active = False
         send_telegram("Bot paused")
@@ -117,5 +122,8 @@ def index():
 # ===== MAIN =====
 threading.Thread(target=trade_loop, daemon=True).start()
 
+import os
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
