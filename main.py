@@ -1,4 +1,3 @@
-import os
 import time
 import json
 import hmac
@@ -9,7 +8,9 @@ import threading
 from datetime import datetime
 from flask import Flask, request
 
-# === CONFIG ===
+app = Flask(__name__)
+
+# ===== Manual Config (แทน .env) =====
 API_KEY = "a279dbed-ae3c-44c2-b0c4-fcf1ff6e76cb"
 API_SECRET = "FA68643E5A176C00AB09637CBC5DA82E"
 API_PASSPHRASE = "Jirawat1-"
@@ -18,12 +19,9 @@ TELEGRAM_CHAT_ID = "8104629569"
 SYMBOL = "BTC-USDT-SWAP"
 BASE_URL = "https://www.okx.com"
 LEVERAGE = 15
+USE_PORTFOLIO_PERCENT = 0.30
 RISK_PER_TRADE = 0.02
 
-# === APP SETUP ===
-app = Flask(__name__)
-start_time = time.time()
-bot_active = True
 active_position = {
     "side": None,
     "entry": None,
@@ -34,7 +32,10 @@ active_position = {
     "last_profit": None
 }
 
-# === UTILITIES ===
+bot_active = True
+start_time = time.time()
+
+# ===== Helper Functions =====
 def sign(timestamp, method, request_path, body=""):
     msg = f"{timestamp}{method}{request_path}{body}"
     return hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
@@ -52,17 +53,13 @@ def get_headers(method, path, body=""):
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print("Telegram Error:", e)
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
 
 def get_price():
     candles = get_candles("1m", 1)
     return float(candles[-1][4])
 
-# === OKX API ===
+# ===== OKX API =====
 def get_candles(tf="1H", limit=100):
     path = f"/api/v5/market/candles?instId={SYMBOL}&bar={tf}&limit={limit}"
     res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
@@ -89,7 +86,8 @@ def place_order(side, size):
         "lever": str(LEVERAGE)
     }
     body = json.dumps(data)
-    res = requests.post(BASE_URL + path, headers=get_headers("POST", path, body), data=body).json()
+    headers = get_headers("POST", path, body)
+    res = requests.post(BASE_URL + path, headers=headers, data=body).json()
     send_telegram(f"[ORDER] {side.upper()} {SYMBOL} | Size: {size}")
     return res
 
@@ -108,7 +106,8 @@ def place_tp_sl(entry, sl, tp, side, size):
         "sz": str(size)
     }
     body = json.dumps(data)
-    res = requests.post(BASE_URL + path, headers=get_headers("POST", path, body), data=body).json()
+    headers = get_headers("POST", path, body)
+    res = requests.post(BASE_URL + path, headers=headers, data=body).json()
     active_position["algo_id"] = res["data"][0]["algoId"]
     return res
 
@@ -116,9 +115,10 @@ def cancel_algo_order(algo_id):
     path = "/api/v5/trade/cancel-algos"
     data = {"instId": SYMBOL, "algoIds": [algo_id]}
     body = json.dumps(data)
-    return requests.post(BASE_URL + path, headers=get_headers("POST", path, body), data=body).json()
+    headers = get_headers("POST", path, body)
+    return requests.post(BASE_URL + path, headers=headers, data=body).json()
 
-# === STRATEGY ===
+# ===== ICT Logic (1D -> H1 -> M15) =====
 def detect_entry_signal():
     m15 = get_candles("15m", 50)
     for i in range(2, len(m15)):
@@ -141,23 +141,28 @@ def find_swing_levels(candles, side):
         tp = min(float(c[3]) for c in candles[-5:])
     return sl, tp
 
-# === TRADE EXECUTION ===
+# ===== Trade Logic =====
 def trade():
     if not bot_active or get_open_orders():
         return
+
     signal = detect_entry_signal()
     if not signal:
         return
+
     entry = signal["entry"]
     side = signal["side"]
     h1 = get_candles("1H", 20)
     sl, tp = find_swing_levels(h1, side)
+
     balance = get_balance()
     risk = balance * RISK_PER_TRADE
     size = round(risk / abs(entry - sl), 4)
+
     place_order(side, size)
     time.sleep(1)
     place_tp_sl(entry, sl, tp, side, size)
+
     active_position.update({
         "side": side,
         "entry": entry,
@@ -165,6 +170,7 @@ def trade():
         "sl": sl,
         "size": size
     })
+
     send_telegram(f"[TRADE OPENED]\nSide: {side.upper()}\nEntry: {entry:.2f}\nSL: {sl:.2f}\nTP: {tp:.2f}\nSize: {size}")
 
 def monitor_position():
@@ -184,15 +190,7 @@ def monitor_position():
         send_telegram(f"[SL to BE] SL moved to Breakeven at {entry:.2f}")
         active_position["algo_id"] = None
 
-# === SCHEDULER LOOP ===
-def run_schedule():
-    schedule.every().hour.at(":00").do(trade)
-    schedule.every(5).minutes.do(monitor_position)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
-# === TELEGRAM WEBHOOK ===
+# ===== Telegram Webhook =====
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
     global bot_active
@@ -202,6 +200,8 @@ def telegram_webhook():
     elif "/uptime" in msg:
         uptime = round((time.time() - start_time) / 3600, 2)
         send_telegram(f"Uptime: {uptime} ชั่วโมง")
+    elif "/status" in msg:
+        send_telegram(f"Bot Status: {'ทำงานอยู่' if bot_active else 'หยุดอยู่'}")
     elif "stop bot" in msg:
         bot_active = False
         send_telegram("บอทหยุดทำงานแล้ว")
@@ -216,35 +216,18 @@ def telegram_webhook():
         send_telegram(f"กำไรล่าสุด: {active_position['last_profit']}")
     elif "สถานะพอร์ต" in msg:
         send_telegram(f"USDT คงเหลือ: {get_balance()}")
-        elif "status" in msg or "/status" in msg:
-        status = "ทำงานอยู่ ✅" if bot_active else "หยุดทำงานอยู่ ❌"
-        price = get_price()
-        entry = active_position['entry'] or "N/A"
-        tp = active_position['tp'] or "N/A"
-        sl = active_position['sl'] or "N/A"
-        size = active_position['size'] or "N/A"
-        profit = active_position['last_profit'] or "N/A"
-        balance = get_balance()
-        text = (
-            f"[ BOT STATUS ]\n"
-            f"สถานะ: {status}\n"
-            f"ราคา BTC ล่าสุด: {price:.2f} USDT\n"
-            f"จุดเข้า: {entry}\n"
-            f"SL: {sl}\n"
-            f"TP: {tp}\n"
-            f"ขนาด: {size}\n"
-            f"กำไรล่าสุด: {profit}\n"
-            f"ยอดพอร์ต: {balance:.2f} USDT"
-        )
-        send_telegram(text)
     return "ok"
 
 @app.route("/")
 def home():
     return f"ICT Bot Running - {datetime.utcnow()}"
 
-# === START ===
-threading.Thread(target=run_schedule, daemon=True).start()
+# ===== Run Scheduler =====
+threading.Thread(target=lambda: (
+    schedule.every().hour.at(":00").do(trade),
+    schedule.every(5).minutes.do(monitor_position),
+    [schedule.run_pending() or time.sleep(1) for _ in iter(int, 1)]
+), daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
