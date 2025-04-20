@@ -9,8 +9,8 @@ from datetime import datetime
 from flask import Flask, request
 from threading import Thread
 # === ตั้งค่าหลัก ===
-API_KEY = "a279dbed-ae3c-44c2-b0c4-fcf1ff6e76cb"
-API_SECRET = "FA68643E5A176C00AB09637CBC5DA82E"
+API_KEY = "e5a0da48-989e-4897-b637-d3475020fd70"
+API_SECRET = "81AF116E5773A7B094DF03844731E342"
 API_PASSPHRASE = "Jirawat1-"
 TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
 TELEGRAM_CHAT_ID = "8104629569"
