@@ -1,203 +1,237 @@
-# main.py
-
-from flask import Flask
-import threading
+import os
 import time
+import json
 import hmac
 import hashlib
-import base64
 import requests
-import json
-import datetime
-
-# === ตั้งค่า OKX API ===
-OKX_API_KEY = "a279dbed-ae3c-44c2-b0c4-fcf1ff6e76cb"
-OKX_API_SECRET = "FA68643E5A176C00AB09637CBC5DA82E"
-OKX_API_PASSPHRASE = "Jirawat1-"
-
-# === Telegram Bot ===
-TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
-TELEGRAM_CHAT_ID = "8104629569"
-
-# === Settings ===
-SYMBOL = "BTC-USDT"
-LEVERAGE = 15
-TRADE_PERCENT = 0.3
-SL_PERCENT = -12
-TP_PERCENT = 30
-TRAILING_START = 10
-TRAILING_SL = 2
+import schedule
+import threading
+from datetime import datetime
+from flask import Flask
 
 app = Flask(__name__)
 
-# === Global Variables ===
-last_choch_alert = None
-last_fibo_alert = None
-active_order = None
-entry_price = None
+# ===== API Keys =====
+API_KEY = os.getenv("a279dbed-ae3c-44c2-b0c4-fcf1ff6e76cb")
+API_SECRET = os.getenv("FA68643E5A176C00AB09637CBC5DA82E")
+API_PASSPHRASE = os.getenv("Jirawat1-")
+TELEGRAM_TOKEN = os.getenv("7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY")
+TELEGRAM_CHAT_ID = os.getenv("8104629569")
 
-# === Helper ===
-def notify_telegram(msg):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-    except Exception as e:
-        print("Telegram Error:", e)
+SYMBOL = "BTC-USDT-SWAP"
+BASE_URL = "https://www.okx.com"
+LEVERAGE = 15
+RISK_PER_TRADE = 0.02
+USE_PORTFOLIO_PERCENT = 0.30
+ATR_THRESHOLD = 1000
 
-def get_iso_time():
-    return datetime.datetime.utcnow().isoformat("T", "milliseconds") + "Z"
+active_position = {
+    "side": None,
+    "entry": None,
+    "tp": None,
+    "sl": None,
+    "size": None,
+    "algo_id": None
+}
 
-def okx_headers(method, endpoint, body=""):
-    ts = get_iso_time()
-    prehash = f"{ts}{method}{endpoint}{body}"
-    sign = base64.b64encode(
-        hmac.new(OKX_API_SECRET.encode(), prehash.encode(), hashlib.sha256).digest()
-    ).decode()
+# ===== Helper Functions =====
+def sign(timestamp, method, request_path, body=''):
+    msg = f"{timestamp}{method}{request_path}{body}"
+    return hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+
+def get_headers(method, path, body=''):
+    timestamp = str(time.time())
+    signature = sign(timestamp, method, path, body)
     return {
-        "OK-ACCESS-KEY": OKX_API_KEY,
-        "OK-ACCESS-SIGN": sign,
-        "OK-ACCESS-TIMESTAMP": ts,
-        "OK-ACCESS-PASSPHRASE": OKX_API_PASSPHRASE,
-        "Content-Type": "application/json",
-        "x-simulated-trading": "0"
+        "OK-ACCESS-KEY": API_KEY,
+        "OK-ACCESS-SIGN": signature,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": API_PASSPHRASE,
+        "Content-Type": "application/json"
     }
 
-def get_price():
-    url = f"https://www.okx.com/api/v5/market/ticker?instId={SYMBOL}"
-    try:
-        res = requests.get(url)
-        price = float(res.json()['data'][0]['last'])
-        return price
-    except:
-        notify_telegram("[ERROR] ไม่สามารถดึงราคาจาก OKX ได้")
-        return None
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+
+# ===== OKX API Calls =====
+def get_candles():
+    path = f"/api/v5/market/candles?instId={SYMBOL}&bar=1H&limit=100"
+    res = requests.get(BASE_URL + path, headers=get_headers("GET", path))
+    return res.json()["data"][::-1]
 
 def get_balance():
-    url = "/api/v5/account/balance"
-    headers = okx_headers("GET", url)
-    res = requests.get("https://www.okx.com" + url, headers=headers)
-    data = res.json()
-    for asset in data['data'][0]['details']:
-        if asset['ccy'] == 'USDT':
-            return float(asset['cashBal'])
-    return 0
+    path = "/api/v5/account/balance?ccy=USDT"
+    res = requests.get(BASE_URL + path, headers=get_headers("GET", path))
+    return float(res.json()['data'][0]['details'][0]['availBal'])
 
-def set_leverage():
-    url = "/api/v5/account/set-leverage"
-    body = {
-        "instId": SYMBOL,
-        "lever": str(LEVERAGE),
-        "mgnMode": "cross"
-    }
-    headers = okx_headers("POST", url, json.dumps(body))
-    requests.post("https://www.okx.com" + url, headers=headers, data=json.dumps(body))
+def get_open_orders():
+    path = f"/api/v5/trade/orders-pending?instId={SYMBOL}"
+    res = requests.get(BASE_URL + path, headers=get_headers("GET", path))
+    return res.json()["data"]
 
 def place_order(side, size):
-    url = "/api/v5/trade/order"
-    body = {
+    path = "/api/v5/trade/order"
+    data = {
         "instId": SYMBOL,
-        "tdMode": "cross",
+        "tdMode": "isolated",
         "side": side,
         "ordType": "market",
+        "sz": str(size),
+        "lever": str(LEVERAGE)
+    }
+    body = json.dumps(data)
+    headers = get_headers("POST", path, body)
+    res = requests.post(BASE_URL + path, headers=headers, data=body).json()
+    send_telegram(f"[ORDER] {side.upper()} {SYMBOL} | Size: {size}")
+    return res
+
+def place_tp_sl(entry, sl, tp, side, size):
+    path = "/api/v5/trade/order-algo"
+    exit_side = "sell" if side == "buy" else "buy"
+    data = {
+        "instId": SYMBOL,
+        "tdMode": "isolated",
+        "side": exit_side,
+        "ordType": "oco",
+        "slTriggerPx": f"{sl:.2f}",
+        "slOrdPx": "-1",
+        "tpTriggerPx": f"{tp:.2f}",
+        "tpOrdPx": "-1",
         "sz": str(size)
     }
-    headers = okx_headers("POST", url, json.dumps(body))
-    res = requests.post("https://www.okx.com" + url, headers=headers, data=json.dumps(body))
-    return res.json()
+    body = json.dumps(data)
+    headers = get_headers("POST", path, body)
+    res = requests.post(BASE_URL + path, headers=headers, data=body).json()
+    algo_id = res["data"][0]["algoId"]
+    active_position["algo_id"] = algo_id
+    return res
 
-def close_position():
-    global active_order, entry_price
-    if not active_order:
+def cancel_algo_order(algo_id):
+    path = "/api/v5/trade/cancel-algos"
+    data = {"instId": SYMBOL, "algoIds": [algo_id]}
+    body = json.dumps(data)
+    headers = get_headers("POST", path, body)
+    res = requests.post(BASE_URL + path, headers=headers, data=body).json()
+    return res
+
+# ===== Strategy Logic =====
+def calculate_atr(candles, period=14):
+    trs = []
+    for i in range(1, period + 1):
+        high = float(candles[-i][2])
+        low = float(candles[-i][3])
+        prev_close = float(candles[-i - 1][4])
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        trs.append(tr)
+    return sum(trs) / period
+
+def detect_fvg(candles):
+    for i in range(2, len(candles)):
+        c1 = candles[i - 2]
+        c3 = candles[i]
+        high1 = float(c1[2])
+        low3 = float(c3[3])
+        if low3 > high1:
+            return {"side": "buy", "entry": (low3 + high1) / 2}
+        low1 = float(c1[3])
+        high3 = float(c3[2])
+        if high3 < low1:
+            return {"side": "sell", "entry": (high3 + low1) / 2}
+    return None
+
+def find_swing_levels(candles, side):
+    if side == "buy":
+        swing_low = min(float(c[3]) for c in candles[-5:])
+        swing_high = max(float(c[2]) for c in candles[-5:])
+        return swing_low, swing_high
+    else:
+        swing_high = max(float(c[2]) for c in candles[-5:])
+        swing_low = min(float(c[3]) for c in candles[-5:])
+        return swing_high, swing_low
+
+# ===== Core Trade Function =====
+def trade():
+    if get_open_orders():
         return
-    side = "sell" if active_order == "buy" else "buy"
-    size = active_order["size"]
-    price_now = get_price()
-    pnl = (price_now - entry_price) / entry_price * 100 if active_order["side"] == "buy" else (entry_price - price_now) / entry_price * 100
-    notify_telegram(f"[CLOSE] ปิดออเดอร์ {active_order['side']} กำไร/ขาดทุน: {pnl:.2f}%")
+
+    candles = get_candles()
+    atr = calculate_atr(candles)
+    if atr > ATR_THRESHOLD:
+        return
+
+    signal = detect_fvg(candles)
+    if not signal:
+        return
+
+    entry = signal["entry"]
+    side = signal["side"]
+    sl, tp = find_swing_levels(candles, side)
+    sl_distance = abs(entry - sl)
+    if sl_distance == 0:
+        return
+
+    balance = get_balance()
+    risk = balance * RISK_PER_TRADE
+    size = round(risk / sl_distance, 4)
+
     place_order(side, size)
-    active_order = None
-    entry_price = None
+    time.sleep(1)
+    place_tp_sl(entry, sl, tp, side, size)
 
-def check_trailing(price):
-    global entry_price
-    if not entry_price:
+    active_position.update({
+        "side": side,
+        "entry": entry,
+        "tp": tp,
+        "sl": sl,
+        "size": size
+    })
+
+    send_telegram(f"""
+[ICT TRADE OPENED]
+Side: {side.upper()}
+Entry: {entry:.2f}
+SL: {sl:.2f}
+TP: {tp:.2f}
+Size: {size}
+ATR: {atr:.2f}
+""")
+
+# ===== Move SL to Break-Even =====
+def monitor_open_position():
+    if not active_position["entry"] or not active_position["algo_id"]:
         return
-    pnl = (price - entry_price) / entry_price * 100 if active_order["side"] == "buy" else (entry_price - price) / entry_price * 100
-    if pnl >= TRAILING_START:
-        sl_trigger = entry_price * (1 + TRAILING_SL / 100) if active_order["side"] == "buy" else entry_price * (1 - TRAILING_SL / 100)
-        if (active_order["side"] == "buy" and price <= sl_trigger) or (active_order["side"] == "sell" and price >= sl_trigger):
-            close_position()
 
-def detect_choch(price):
-    global last_choch_alert
-    now = time.time()
-    if last_choch_alert is None or now - last_choch_alert > 900:
-        notify_telegram("[ALERT] พบสัญญาณ CHoCH (M15)")
-        last_choch_alert = now
-        return True
-    return False
+    candles = get_candles()
+    last_price = float(candles[-1][4])
+    side = active_position["side"]
+    entry = active_position["entry"]
+    tp = active_position["tp"]
+    size = active_position["size"]
 
-def detect_fibo_zone(price, low, high):
-    global last_fibo_alert
-    zone_low = low + (high - low) * 0.618
-    zone_high = low + (high - low) * 0.786
-    if zone_low <= price <= zone_high:
-        now = time.time()
-        if last_fibo_alert is None or now - last_fibo_alert > 1800:
-            notify_telegram("[ALERT] ราคาเข้าโซน Fibonacci")
-            last_fibo_alert = now
-        return True
-    return False
+    tp_half = entry + (tp - entry) * 0.5 if side == "buy" else entry - (entry - tp) * 0.5
+    if (side == "buy" and last_price >= tp_half) or (side == "sell" and last_price <= tp_half):
+        cancel_algo_order(active_position["algo_id"])
+        time.sleep(1)
+        place_tp_sl(entry, entry, tp, side, size)
+        active_position["sl"] = entry
+        send_telegram(f"[SL MOVED TO BE] SL moved to Break-Even at {entry:.2f}")
+        active_position["algo_id"] = None
 
-def run_bot():
-    global active_order, entry_price
-
-    notify_telegram("ระบบเริ่มทำงานแล้ว (OKX Futures)")
-
-    set_leverage()
-
+# ===== Schedule =====
+def run_schedule():
+    schedule.every().hour.at(":00").do(trade)
+    schedule.every(5).minutes.do(monitor_open_position)
     while True:
-        try:
-            price = get_price()
-            if not price:
-                time.sleep(10)
-                continue
+        schedule.run_pending()
+        time.sleep(1)
 
-            # ตัวอย่าง Fake Range
-            low = price * 0.98
-            high = price * 1.02
-
-            # วิเคราะห์ CHoCH TF M15
-            if detect_choch(price) and detect_fibo_zone(price, low, high):
-                if not active_order:
-                    balance = get_balance()
-                    trade_amount = (balance * TRADE_PERCENT * LEVERAGE) / price
-                    order_side = "buy"
-                    order = place_order(order_side, trade_amount)
-                    if order.get("code") == "0":
-                        active_order = {"side": order_side, "size": trade_amount}
-                        entry_price = price
-                        notify_telegram(f"[OPEN] เปิดออเดอร์ {order_side.upper()} ที่ราคา {price}")
-                    else:
-                        notify_telegram(f"[ERROR] ไม่สามารถเปิดออเดอร์ได้: {order}")
-            elif active_order:
-                pnl = (price - entry_price) / entry_price * 100 if active_order["side"] == "buy" else (entry_price - price) / entry_price * 100
-                if pnl <= SL_PERCENT or pnl >= TP_PERCENT:
-                    close_position()
-                else:
-                    check_trailing(price)
-
-        except Exception as e:
-            notify_telegram(f"[ERROR] เกิดข้อผิดพลาด: {str(e)}")
-
-        time.sleep(60)
-
-@app.route('/')
+# ===== Flask App =====
+@app.route("/")
 def home():
-    return "OKX Futures Bot is Running!"
+    return f"ICT Bot Running - {datetime.utcnow()}"
 
-if __name__ == '__main__':
-    t = threading.Thread(target=run_bot)
-    t.daemon = True
-    t.start()
-    app.run(host='0.0.0.0', port=10000)
+threading.Thread(target=run_schedule, daemon=True).start()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
