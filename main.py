@@ -7,16 +7,16 @@ import requests
 import schedule
 import threading
 from datetime import datetime
-from flask import Flask
+from flask import Flask, request
 
 app = Flask(__name__)
 
 # ===== API Keys =====
-API_KEY = os.getenv("a279dbed-ae3c-44c2-b0c4-fcf1ff6e76cb")
-API_SECRET = os.getenv("FA68643E5A176C00AB09637CBC5DA82E")
-API_PASSPHRASE = os.getenv("Jirawat1-")
-TELEGRAM_TOKEN = os.getenv("7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY")
-TELEGRAM_CHAT_ID = os.getenv("8104629569")
+API_KEY = "a279dbed-ae3c-44c2-b0c4-fcf1ff6e76cb"
+API_SECRET = "FA68643E5A176C00AB09637CBC5DA82E"
+API_PASSPHRASE = "Jirawat1-"
+TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
+TELEGRAM_CHAT_ID = "8104629569"
 
 SYMBOL = "BTC-USDT-SWAP"
 BASE_URL = "https://www.okx.com"
@@ -26,7 +26,7 @@ USE_PORTFOLIO_PERCENT = 0.30
 ATR_THRESHOLD = 1000
 
 active_position = {
-    "last_profit" = None,
+    "last_profit": None,
     "side": None,
     "entry": None,
     "tp": None,
@@ -104,8 +104,9 @@ def place_tp_sl(entry, sl, tp, side, size):
     body = json.dumps(data)
     headers = get_headers("POST", path, body)
     res = requests.post(BASE_URL + path, headers=headers, data=body).json()
-    algo_id = res["data"][0]["algoId"]
-    active_position["algo_id"] = algo_id
+    if "data" in res:
+        algo_id = res["data"][0]["algoId"]
+        active_position["algo_id"] = algo_id
     return res
 
 def cancel_algo_order(algo_id):
@@ -188,15 +189,9 @@ def trade():
         "size": size
     })
 
-    send_telegram(f"""
-[ICT TRADE OPENED]
-Side: {side.upper()}
-Entry: {entry:.2f}
-SL: {sl:.2f}
-TP: {tp:.2f}
-Size: {size}
-ATR: {atr:.2f}
-""")
+    msg = "[ICT TRADE OPENED]\n"
+    msg += f"Side: {side.upper()}\nEntry: {entry:.2f}\nSL: {sl:.2f}\nTP: {tp:.2f}\nSize: {size}\nATR: {atr:.2f}"
+    send_telegram(msg)
 
 # ===== Move SL to Break-Even =====
 def monitor_open_position():
@@ -218,6 +213,36 @@ def monitor_open_position():
         active_position["sl"] = entry
         send_telegram(f"[SL MOVED TO BE] SL moved to Break-Even at {entry:.2f}")
         active_position["algo_id"] = None
+
+# ===== Telegram Bot Handlers =====
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    data = request.get_json()
+    message = data.get("message", {}).get("text", "").lower()
+
+    if "à¸à¸³à¸à¸²à¸à¹à¸«à¸¡" in message:
+        send_telegram("à¸à¸­à¸à¸à¸³à¸à¸²à¸à¸­à¸¢à¸¹à¹à¸à¸£à¸±à¸")
+    elif "à¸£à¸²à¸à¸²" in message:
+        price = float(get_candles()[-1][4])
+        send_telegram(f"à¸£à¸²à¸à¸²à¸¥à¹à¸²à¸ªà¸¸à¸ BTC: {price:.2f} USDT")
+    elif "à¸à¸¸à¸à¹à¸à¹à¸²" in message:
+        if active_position["entry"]:
+            send_telegram(f"à¸à¸¸à¸à¹à¸à¹à¸²à¸­à¸­à¹à¸à¸­à¸£à¹à¸¥à¹à¸²à¸ªà¸¸à¸: {active_position['entry']:.2f}")
+        else:
+            send_telegram("à¸¢à¸±à¸à¹à¸¡à¹à¸¡à¸µà¸à¸¸à¸à¹à¸à¹à¸²à¸­à¸­à¹à¸à¸­à¸£à¹")
+    elif "à¸à¸³à¹à¸£" in message:
+        if active_position["entry"]:
+            current = float(get_candles()[-1][4])
+            entry = active_position["entry"]
+            size = active_position["size"]
+            pnl = (current - entry) * size if active_position["side"] == "buy" else (entry - current) * size
+            send_telegram(f"à¸à¸³à¹à¸£/à¸à¸²à¸à¸à¸¸à¸à¸à¸±à¸à¸à¸¸à¸à¸±à¸: {pnl:.2f} USDT")
+        else:
+            send_telegram("à¸¢à¸±à¸à¹à¸¡à¹à¸¡à¸µà¸­à¸­à¹à¸à¸­à¸£à¹à¸à¸µà¹à¹à¸à¸´à¸à¸­à¸¢à¸¹à¹")
+    elif "à¸à¸­à¸£à¹à¸" in message:
+        balance = get_balance()
+        send_telegram(f"à¸¢à¸­à¸à¸à¸à¹à¸«à¸¥à¸·à¸­à¸à¸­à¸£à¹à¸: {balance:.2f} USDT")
+    return "ok"
 
 # ===== Schedule =====
 def run_schedule():
