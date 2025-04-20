@@ -3,14 +3,8 @@ import json
 import hmac
 import hashlib
 import requests
-import threading
-import schedule
-import os
-from datetime import datetime
+from threading import Thread
 from flask import Flask, request
-
-# === Flask App ===
-app = Flask(__name__)
 
 # === ตั้งค่าหลัก ===
 API_KEY = "a279dbed-ae3c-44c2-b0c4-fcf1ff6e76cb"
@@ -22,6 +16,7 @@ TELEGRAM_CHAT_ID = "8104629569"
 SYMBOL = "BTC-USDT-SWAP"
 BASE_URL = "https://www.okx.com"
 LEVERAGE = 10
+USE_PORTFOLIO_PERCENT = 0.3
 
 active_position = {
     "side": None,
@@ -35,7 +30,7 @@ active_position = {
 bot_active = True
 start_time = time.time()
 
-# === ระบบ Sign OKX ===
+# === SIGN และ HEADERS ===
 def sign(timestamp, method, request_path, body=""):
     msg = f"{timestamp}{method}{request_path}{body}"
     return hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
@@ -51,38 +46,47 @@ def get_headers(method, path, body=""):
         "Content-Type": "application/json"
     }
 
-# === Telegram แจ้งเตือน ===
-def send_telegram(msg, chat_id=TELEGRAM_CHAT_ID):
+# === Telegram ===
+def send_telegram(msg, chat_id=None):
+    if chat_id is None:
+        chat_id = TELEGRAM_CHAT_ID
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": chat_id, "text": msg})
     except Exception as e:
-        print("ส่ง Telegram ไม่สำเร็จ:", e)
+        print("[ERROR] ส่ง Telegram ไม่ได้:", e)
 
-# === ดึงราคา / ข้อมูล ===
+# === ดึงราคาและข้อมูล ===
 def get_price():
     candles = get_candles("1m", 1)
-    return float(candles[-1][4]) if candles else 0
+    return float(candles[-1][4])
 
-def get_candles(tf="15m", limit=50):
+def get_candles(tf="15m", limit=50, retries=3):
     path = f"/api/v5/market/candles?instId={SYMBOL}&bar={tf}&limit={limit}"
-    try:
-        res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
-        return res["data"][::-1]
-    except:
-        send_telegram("[ERROR] ดึงข้อมูลแท่งเทียนล้มเหลว")
-        return []
+    for _ in range(retries):
+        try:
+            res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
+            return res["data"][::-1]
+        except:
+            time.sleep(1)
+    send_telegram("[ERROR] ดึงข้อมูลแท่งเทียนล้มเหลว")
+    return []
 
 def get_balance():
-    path = "/api/v5/account/balance?ccy=USDT"
+    path = "/api/v5/account/balance"
     try:
         res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
-        return float(res['data'][0]['details'][0]['availBal'])
-    except:
-        send_telegram("[ERROR] ดึง Balance ไม่ได้")
+        if "data" in res and len(res["data"]) > 0:
+            for item in res["data"][0]["details"]:
+                if item["ccy"] == "USDT":
+                    return float(item["availBal"])
+        send_telegram(f"[ERROR] ไม่พบ USDT ในบัญชี: {res}")
+        return 0
+    except Exception as e:
+        send_telegram(f"[ERROR] ดึง Balance ไม่ได้: {str(e)}")
         return 0
 
-# === ออเดอร์ ===
+# === Order ===
 def place_order(side, size):
     path = "/api/v5/trade/order"
     data = {
@@ -96,7 +100,7 @@ def place_order(side, size):
     body = json.dumps(data)
     try:
         res = requests.post(BASE_URL + path, headers=get_headers("POST", path, body), data=body).json()
-        send_telegram(f"[ORDER] {side.upper()} | Size: {size}")
+        send_telegram(f"[ORDER] {side.upper()} {SYMBOL} | Size: {size}")
         return res
     except:
         send_telegram("[ERROR] วางคำสั่ง Order ไม่สำเร็จ")
@@ -135,20 +139,20 @@ def cancel_algo_order(algo_id):
         send_telegram("[ERROR] ยกเลิก Algo Order ไม่สำเร็จ")
         return {}
 
-# === ระบบวิเคราะห์ ICT ===
+# === Strategy ===
 def detect_entry_signal():
-    m15 = get_candles("15m", 50)
-    if not m15:
+    candles = get_candles("15m", 50)
+    if not candles:
         return None
-    for i in range(2, len(m15)):
-        high1 = float(m15[i - 2][2])
-        low3 = float(m15[i][3])
+    for i in range(2, len(candles)):
+        high1 = float(candles[i - 2][2])
+        low3 = float(candles[i][3])
         if low3 > high1:
-            return {"side": "buy"}
-        low1 = float(m15[i - 2][3])
-        high3 = float(m15[i][2])
+            return {"side": "buy", "entry": (low3 + high1) / 2}
+        low1 = float(candles[i - 2][3])
+        high3 = float(candles[i][2])
         if high3 < low1:
-            return {"side": "sell"}
+            return {"side": "sell", "entry": (high3 + low1) / 2}
     return None
 
 def find_swing_levels(candles, side):
@@ -160,10 +164,11 @@ def find_swing_levels(candles, side):
         tp = min(float(c[3]) for c in candles[-5:])
     return sl, tp
 
-# === จัดการ Position ===
+# === Position Monitor ===
 def monitor_position():
     if not active_position["side"]:
         return
+
     price = get_price()
     entry = active_position["entry"]
     tp = active_position["tp"]
@@ -176,7 +181,7 @@ def monitor_position():
         if (side == "buy" and price >= tp_half) or (side == "sell" and price <= tp_half):
             close_half_position()
             active_position["half_closed"] = True
-            send_telegram("[TP] Partial TP สำเร็จ")
+            send_telegram("[TP] ปิดครึ่งกำไรแล้ว")
 
     trail_gap = abs(tp - entry) * 0.3
     new_sl = price - trail_gap if side == "buy" else price + trail_gap
@@ -184,7 +189,7 @@ def monitor_position():
         cancel_algo_order(active_position["algo_id"])
         place_tp_sl(entry, new_sl, tp, side, size / 2 if active_position["half_closed"] else size)
         active_position["sl"] = new_sl
-        send_telegram(f"[TRAILING SL] ขยับ SL ใหม่: {new_sl:.2f}")
+        send_telegram(f"[TRAILING] SL ขยับใหม่: {new_sl:.2f}")
 
 def close_half_position():
     path = "/api/v5/trade/order"
@@ -203,53 +208,59 @@ def close_half_position():
     except:
         send_telegram("[ERROR] ปิด Partial TP ไม่สำเร็จ")
 
-# === ระบบหลัก ===
+# === Main Bot Loop ===
 def trading_bot():
-    try:
-        if not active_position["side"]:
-            signal = detect_entry_signal()
-            if signal:
-                entry_price = get_price()
-                candles = get_candles("15m", 10)
-                sl, tp = find_swing_levels(candles, signal["side"])
-                balance = get_balance()
-                size = round((balance * 0.3 * LEVERAGE) / entry_price, 3)
+    while True:
+        try:
+            if not active_position["side"]:
+                signal = detect_entry_signal()
+                if signal:
+                    entry_price = get_price()
+                    candles = get_candles("15m", 10)
+                    sl, tp = find_swing_levels(candles, signal["side"])
+                    balance = get_balance()
+                    size = round((balance * USE_PORTFOLIO_PERCENT * LEVERAGE) / entry_price, 3)
+                    res = place_order(signal["side"], size)
+                    if res.get("data"):
+                        active_position.update({
+                            "side": signal["side"],
+                            "entry": entry_price,
+                            "sl": sl,
+                            "tp": tp,
+                            "size": size,
+                            "half_closed": False
+                        })
+                        place_tp_sl(entry_price, sl, tp, signal["side"], size)
+            else:
+                monitor_position()
+        except Exception as e:
+            send_telegram(f"[BOT ERROR] {str(e)}")
+        time.sleep(10)
 
-                res = place_order(signal["side"], size)
-                if res.get("data"):
-                    active_position.update({
-                        "side": signal["side"],
-                        "entry": entry_price,
-                        "sl": sl,
-                        "tp": tp,
-                        "size": size,
-                        "half_closed": False
-                    })
-                    place_tp_sl(entry_price, sl, tp, signal["side"], size)
-        else:
-            monitor_position()
-    except Exception as e:
-        send_telegram(f"[BOT ERROR] {str(e)}")
+# === Telegram Webhook ===
+app = Flask(__name__)
 
-# === Webhook Telegram ===
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     global bot_active
     update = request.get_json()
-    message = update.get('message', {}).get('text', '')
-    chat_id = update.get('message', {}).get('chat', {}).get('id', TELEGRAM_CHAT_ID)
+    message = update.get("message", {}).get("text", "")
+    chat_id = update.get("message", {}).get("chat", {}).get("id", "")
+
+    if not message:
+        return "ok", 200
 
     if message == '/ping':
-        send_telegram("pong", chat_id)
+        return send_telegram("pong", chat_id), 200
     elif message == '/uptime':
         uptime = time.time() - start_time
-        send_telegram(f"บอททำงานมาแล้ว {int(uptime)} วินาที", chat_id)
+        return send_telegram(f"Bot ทำงานมาแล้ว {int(uptime)} วินาที", chat_id), 200
     elif message.lower() == 'stop bot':
         bot_active = False
-        send_telegram("บอทถูกหยุดชั่วคราวแล้ว", chat_id)
+        return send_telegram("บอทถูกหยุดแล้ว", chat_id), 200
     elif message.lower() == 'resume bot':
         bot_active = True
-        send_telegram("บอทกลับมาทำงานแล้ว", chat_id)
+        return send_telegram("บอทกลับมาทำงานแล้ว", chat_id), 200
     elif message.lower() == 'status':
         if active_position["side"]:
             msg = f"""
@@ -262,19 +273,18 @@ Size: {active_position["size"]}
 Half Closed: {active_position["half_closed"]}
 """
         else:
-            msg = "ยังไม่มี Position ที่เปิดอยู่ตอนนี้"
-        send_telegram(msg.strip(), chat_id)
+            msg = "ยังไม่มี Position ที่เปิดอยู่"
+        return send_telegram(msg.strip(), chat_id), 200
+
     return "ok", 200
 
-# === รันบอทแบบ Background Thread ===
+# === Run Bot ===
 def run_bot():
     while True:
         if bot_active:
             trading_bot()
         time.sleep(10)
 
-# === Main ===
-if __name__ == '__main__':
-    threading.Thread(target=run_bot).start()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    Thread(target=run_bot).start()
+    app.run(host="0.0.0.0", port=5000)
