@@ -26,6 +26,7 @@ USE_PORTFOLIO_PERCENT = 0.30
 ATR_THRESHOLD = 1000
 
 active_position = {
+    "last_profit" = None,
     "side": None,
     "entry": None,
     "tp": None,
