@@ -1,14 +1,8 @@
-import time
-import json
-import hmac
-import hashlib
-import requests
-import threading
-import schedule
+import time, json, hmac, hashlib, requests, threading
 from datetime import datetime
 from flask import Flask, request
-from threading import Thread
-# === ตั้งค่าหลัก ===
+
+# === ตั้งค่าคงที่ ===
 API_KEY = "e5a0da48-989e-4897-b637-d3475020fd70"
 API_SECRET = "81AF116E5773A7B094DF03844731E342"
 API_PASSPHRASE = "Jirawat1-"
@@ -18,151 +12,114 @@ TELEGRAM_CHAT_ID = "8104629569"
 SYMBOL = "BTC-USDT-SWAP"
 BASE_URL = "https://www.okx.com"
 LEVERAGE = 10
-USE_PORTFOLIO_PERCENT = 0.30
 RISK_PER_TRADE = 0.02
+PORTFOLIO_PORTION = 0.3
 
-# ตัวแปรสถานะ
 active_position = {
-    "side": None,
-    "entry": None,
-    "tp": None,
-    "sl": None,
-    "size": None,
-    "algo_id": None,
-    "last_profit": None,
-    "partial_taken": False
+    "side": None, "entry": None, "tp": None, "sl": None, "size": None,
+    "algo_id": None, "last_profit": None, "partial_done": False
 }
 bot_active = True
 start_time = time.time()
 
-# === ระบบ Sign สำหรับ OKX ===
-def sign(timestamp, method, request_path, body=""):
-    msg = f"{timestamp}{method}{request_path}{body}"
+app = Flask(__name__)
+
+# === ฟังก์ชันช่วย ===
+def get_timestamp():
+    try:
+        res = requests.get(BASE_URL + "/api/v5/public/time").json()
+        return res["data"][0]["ts"]
+    except: return str(int(time.time() * 1000))
+
+def sign(ts, method, path, body=""):
+    msg = f"{ts}{method}{path}{body}"
     return hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
-def get_headers(method, path, body=""):
-    timestamp = str(time.time())
-    signature = sign(timestamp, method, path, body)
+def headers(method, path, body=""):
+    ts = get_timestamp()
     return {
         "OK-ACCESS-KEY": API_KEY,
-        "OK-ACCESS-SIGN": signature,
-        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-SIGN": sign(ts, method, path, body),
+        "OK-ACCESS-TIMESTAMP": str(int(ts) / 1000),
         "OK-ACCESS-PASSPHRASE": API_PASSPHRASE,
         "Content-Type": "application/json"
     }
 
-# === Telegram แจ้งเตือน ===
-def send_telegram(msg, chat_id=TELEGRAM_CHAT_ID):
+def telegram(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": chat_id, "text": msg})
-    except Exception as e:
-        print("ส่ง Telegram ไม่สำเร็จ:", e)
-        # === ดึงราคาและข้อมูลแท่งเทียน ===
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={
+            "chat_id": TELEGRAM_CHAT_ID, "text": msg
+        })
+    except: pass
+
+def retry_request(method, path, body=None):
+    for _ in range(3):
+        try:
+            h = headers(method, path, json.dumps(body) if body else "")
+            url = BASE_URL + path
+            r = requests.request(method, url, headers=h, json=body, timeout=5)
+            return r.json()
+        except Exception as e:
+            telegram(f"[ERROR] Retry API: {e}")
+            time.sleep(2)
+    return None
+
+# === ฟังก์ชัน API OKX ===
+def get_candles(tf="1H", limit=100):
+    path = f"/api/v5/market/candles?instId={SYMBOL}&bar={tf}&limit={limit}"
+    r = retry_request("GET", path)
+    return r["data"][::-1] if r else []
+
 def get_price():
     candles = get_candles("1m", 1)
-    return float(candles[-1][4])
-
-def get_candles(tf="1H", limit=100, retries=3):
-    path = f"/api/v5/market/candles?instId={SYMBOL}&bar={tf}&limit={limit}"
-    for _ in range(retries):
-        try:
-            res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
-            return res["data"][::-1]
-        except:
-            time.sleep(1)
-    send_telegram("[ERROR] ดึงข้อมูลแท่งเทียนล้มเหลว")
-    return []
+    return float(candles[-1][4]) if candles else 0
 
 def get_balance():
     path = "/api/v5/account/balance?ccy=USDT"
-    try:
-        res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
-        return float(res['data'][0]['details'][0]['availBal'])
-    except:
-        send_telegram("[ERROR] ดึง Balance ไม่ได้")
-        return 0
+    r = retry_request("GET", path)
+    return float(r["data"][0]["details"][0]["availBal"]) if r else 0
 
-def get_open_orders():
-    path = f"/api/v5/trade/orders-pending?instId={SYMBOL}"
-    try:
-        res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
-        return res["data"]
-    except:
-        return []
-
-# === ฟังก์ชันสั่งออเดอร์และ TP/SL ===
-def place_order(side, size):
+def place_market_order(side, size):
     path = "/api/v5/trade/order"
-    data = {
-        "instId": SYMBOL,
-        "tdMode": "isolated",
-        "side": side,
-        "ordType": "market",
-        "sz": str(size),
-        "lever": str(LEVERAGE)
+    body = {
+        "instId": SYMBOL, "tdMode": "isolated", "side": side,
+        "ordType": "market", "sz": str(size), "lever": str(LEVERAGE)
     }
-    body = json.dumps(data)
-    try:
-        res = requests.post(BASE_URL + path, headers=get_headers("POST", path, body), data=body).json()
-        send_telegram(f"[ORDER] {side.upper()} {SYMBOL} | Size: {size}")
-        return res
-    except:
-        send_telegram("[ERROR] วางคำสั่ง Order ไม่สำเร็จ")
-        return {}
+    r = retry_request("POST", path, body)
+    telegram(f"[ORDER] {side.upper()} {SYMBOL} Size: {size}")
+    return r
 
 def place_tp_sl(entry, sl, tp, side, size):
     path = "/api/v5/trade/order-algo"
     exit_side = "sell" if side == "buy" else "buy"
-    data = {
-        "instId": SYMBOL,
-        "tdMode": "isolated",
-        "side": exit_side,
-        "ordType": "oco",
-        "slTriggerPx": f"{sl:.2f}",
-        "slOrdPx": "-1",
-        "tpTriggerPx": f"{tp:.2f}",
-        "tpOrdPx": "-1",
-        "sz": str(size)
+    body = {
+        "instId": SYMBOL, "tdMode": "isolated", "side": exit_side,
+        "ordType": "oco", "slTriggerPx": f"{sl:.2f}", "slOrdPx": "-1",
+        "tpTriggerPx": f"{tp:.2f}", "tpOrdPx": "-1", "sz": str(size)
     }
-    body = json.dumps(data)
-    try:
-        res = requests.post(BASE_URL + path, headers=get_headers("POST", path, body), data=body).json()
-        active_position["algo_id"] = res["data"][0]["algoId"]
-        return res
-    except:
-        send_telegram("[ERROR] วาง TP/SL ไม่สำเร็จ")
-        return {}
+    r = retry_request("POST", path, body)
+    if r: active_position["algo_id"] = r["data"][0]["algoId"]
 
-def cancel_algo_order(algo_id):
+def cancel_algo(algo_id):
     path = "/api/v5/trade/cancel-algos"
-    data = {"instId": SYMBOL, "algoIds": [algo_id]}
-    body = json.dumps(data)
-    try:
-        return requests.post(BASE_URL + path, headers=get_headers("POST", path, body), data=body).json()
-    except:
-        send_telegram("[ERROR] ยกเลิก Algo Order ไม่สำเร็จ")
-        return {}
+    body = {"instId": SYMBOL, "algoIds": [algo_id]}
+    retry_request("POST", path, body)
 
-# === วิเคราะห์ Entry ตาม ICT 1D > H1 > M15 ===
-def detect_entry_signal():
+# === Entry Strategy (ICT) ===
+def detect_entry():
     m15 = get_candles("15m", 50)
-    if not m15:
-        return None
     for i in range(2, len(m15)):
-        high1 = float(m15[i - 2][2])
+        high1 = float(m15[i-2][2])
         low3 = float(m15[i][3])
         if low3 > high1:
-            return {"side": "buy", "entry": (low3 + high1) / 2}
-        low1 = float(m15[i - 2][3])
+            return {"side": "buy", "entry": (low3 + high1)/2}
+        low1 = float(m15[i-2][3])
         high3 = float(m15[i][2])
         if high3 < low1:
-            return {"side": "sell", "entry": (high3 + low1) / 2}
+            return {"side": "sell", "entry": (high3 + low1)/2}
     return None
 
-def find_swing_levels(candles, side):
-    if not candles:
-        return (0, 0)
+def swing_sl_tp(candles, side):
     if side == "buy":
         sl = min(float(c[3]) for c in candles[-5:])
         tp = max(float(c[2]) for c in candles[-5:])
@@ -170,144 +127,117 @@ def find_swing_levels(candles, side):
         sl = max(float(c[2]) for c in candles[-5:])
         tp = min(float(c[3]) for c in candles[-5:])
     return sl, tp
-    # === ตัวแปรสำหรับติดตามสถานะ ===
-active_position = {
-    "side": None,
-    "entry": 0,
-    "sl": 0,
-    "tp": 0,
-    "size": 0,
-    "algo_id": None,
-    "half_closed": False
-}
 
-def monitor_position():
-    if not active_position["side"]:
+# === การเทรด ===
+def trade():
+    if not bot_active or active_position["entry"]:
         return
 
+    signal = detect_entry()
+    if not signal: return
+    side, entry = signal["side"], signal["entry"]
+    h1 = get_candles("1H", 20)
+    sl, tp = swing_sl_tp(h1, side)
+    bal = get_balance()
+    risk = bal * RISK_PER_TRADE
+    size = round((risk / abs(entry - sl)), 4)
+
+    place_market_order(side, size)
+    time.sleep(1)
+    place_tp_sl(entry, sl, tp, side, size)
+
+    active_position.update({
+        "side": side, "entry": entry, "tp": tp, "sl": sl,
+        "size": size, "partial_done": False
+    })
+
+    telegram(f"[TRADE OPENED]\nSide: {side.upper()}\nEntry: {entry:.2f}\nSL: {sl:.2f}\nTP: {tp:.2f}\nSize: {size}")
+
+# === จัดการ Position: SL-BE / Partial / Trailing ===
+def monitor():
+    if not active_position["entry"]: return
     price = get_price()
     entry = active_position["entry"]
     tp = active_position["tp"]
-    sl = active_position["sl"]
     side = active_position["side"]
-    size = float(active_position["size"])
+    sl = active_position["sl"]
+    size = active_position["size"]
+    algo_id = active_position["algo_id"]
 
-    # === Partial TP ===
     tp_half = entry + (tp - entry) * 0.5 if side == "buy" else entry - (entry - tp) * 0.5
-    if not active_position["half_closed"]:
-        if (side == "buy" and price >= tp_half) or (side == "sell" and price <= tp_half):
-            close_half_position()
-            active_position["half_closed"] = True
-            send_telegram("[TP] Partial TP สำเร็จ ปิดกำไรครึ่งหนึ่ง")
+    trailing_sl = price - (tp - entry) * 0.3 if side == "buy" else price + (entry - tp) * 0.3
 
-    # === Trailing Stop ===
-    trail_gap = abs(tp - entry) * 0.3  # 30% trailing
-    new_sl = price - trail_gap if side == "buy" else price + trail_gap
-    if (side == "buy" and new_sl > sl) or (side == "sell" and new_sl < sl):
-        cancel_algo_order(active_position["algo_id"])
-        place_tp_sl(entry, new_sl, tp, side, size / 2 if active_position["half_closed"] else size)
-        active_position["sl"] = new_sl
-        send_telegram(f"[TRAILING] SL ขยับใหม่เป็น {new_sl:.2f}")
-
-def close_half_position():
-    path = "/api/v5/trade/order"
-    size = float(active_position["size"]) / 2
-    side = "sell" if active_position["side"] == "buy" else "buy"
-    data = {
-        "instId": SYMBOL,
-        "tdMode": "isolated",
-        "side": side,
-        "ordType": "market",
-        "sz": str(size)
-    }
-    body = json.dumps(data)
     try:
-        requests.post(BASE_URL + path, headers=get_headers("POST", path, body), data=body)
-    except:
-        send_telegram("[ERROR] ปิด Partial TP ไม่สำเร็จ")
+        # SL to BE
+        if algo_id and ((side == "buy" and price >= tp_half) or (side == "sell" and price <= tp_half)):
+            cancel_algo(algo_id)
+            time.sleep(1)
+            place_tp_sl(entry, entry, tp, side, size)
+            active_position["sl"] = entry
+            active_position["algo_id"] = None
+            telegram(f"[SL MOVED] SL moved to Breakeven: {entry:.2f}")
 
-def trading_bot():
+        # Partial TP
+        if not active_position["partial_done"] and ((side == "buy" and price >= tp_half) or (side == "sell" and price <= tp_half)):
+            place_market_order("sell" if side == "buy" else "buy", round(size/2, 4))
+            active_position["partial_done"] = True
+            telegram(f"[PARTIAL TP] ปิดกำไรครึ่งที่ TP1")
+
+        # Trailing Stop
+        if active_position["partial_done"]:
+            cancel_algo(algo_id)
+            time.sleep(1)
+            place_tp_sl(entry, trailing_sl, tp, side, round(size/2, 4))
+            active_position["sl"] = trailing_sl
+            telegram(f"[TRAILING SL] SL ขยับตามราคา: {trailing_sl:.2f}")
+    except Exception as e:
+        telegram(f"[ERROR] monitor: {e}")
+
+# === Schedule Loop ===
+def loop():
     while True:
-        try:
-            if not active_position["side"]:
-                signal = detect_entry_signal()
-                if signal:
-                    entry_price = get_price()
-                    candles = get_candles("15m", 10)
-                    sl, tp = find_swing_levels(candles, signal["side"])
-                    balance = get_balance()
-                    size = round((balance * 0.3 * LEVERAGE) / entry_price, 3)
+        now = datetime.utcnow()
+        if now.minute % 15 == 0:
+            trade()
+        monitor()
+        time.sleep(60)
 
-                    res = place_order(signal["side"], size)
-                    if res.get("data"):
-                        active_position.update({
-                            "side": signal["side"],
-                            "entry": entry_price,
-                            "sl": sl,
-                            "tp": tp,
-                            "size": size,
-                            "half_closed": False
-                        })
-                        place_tp_sl(entry_price, sl, tp, signal["side"], size)
-            else:
-                monitor_position()
-
-        except Exception as e:
-            send_telegram(f"[BOT ERROR] {str(e)}")
-
-        time.sleep(10)
-
-# === Webhook สำหรับรับข้อความจาก Telegram ===
-app = Flask(__name__)
-@app.route('/webhook', methods=['POST'])
+# === Telegram Webhook ===
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
     global bot_active
-    update = request.get_json()
-    message = update.get('message', {}).get('text', '')
-    chat_id = update.get('message', {}).get('chat', {}).get('id', '')
-
-    if not message:
-        return "ok", 200
-
-    if message == '/ping':
-        return send_telegram("pong", chat_id), 200
-    elif message == '/uptime':
-        uptime = time.time() - start_time
-        return send_telegram(f"Bot ทำงานมาแล้ว {int(uptime)} วินาที", chat_id), 200
-    elif message.lower() == 'stop bot':
+    msg = request.json["message"]["text"].lower()
+    if "ping" in msg:
+        telegram(f"ทำงานปกติ | เวลา: {datetime.utcnow()}")
+    elif "uptime" in msg:
+        t = round((time.time() - start_time) / 3600, 2)
+        telegram(f"Uptime: {t} ชม.")
+    elif "stop" in msg:
         bot_active = False
-        return send_telegram("บอทถูกหยุดชั่วคราวแล้ว", chat_id), 200
-    elif message.lower() == 'resume bot':
+        telegram("หยุดบอทแล้ว")
+    elif "resume" in msg:
         bot_active = True
-        return send_telegram("บอทกลับมาทำงานแล้ว", chat_id), 200
-    elif message.lower() == 'status':
-        if active_position["side"]:
-            msg = f"""
-[STATUS]
-Side: {active_position["side"]}
-Entry: {active_position["entry"]}
-TP: {active_position["tp"]}
-SL: {active_position["sl"]}
-Size: {active_position["size"]}
-Half Closed: {active_position["half_closed"]}
-"""
-        else:
-            msg = "ยังไม่มี Position ที่เปิดอยู่ตอนนี้"
-        return send_telegram(msg.strip(), chat_id), 200
+        telegram("เปิดบอทต่อแล้ว")
+    elif "entry" in msg:
+        telegram(f"Entry: {active_position['entry']}")
+    elif "tp" in msg:
+        telegram(f"TP: {active_position['tp']}")
+    elif "sl" in msg:
+        telegram(f"SL: {active_position['sl']}")
+    elif "size" in msg:
+        telegram(f"Size: {active_position['size']}")
+    elif "status" in msg:
+        telegram(f"Side: {active_position['side']}\nEntry: {active_position['entry']}\nTP: {active_position['tp']}\nSL: {active_position['sl']}")
+    elif "balance" in msg:
+        telegram(f"Balance: {get_balance()} USDT")
+    return "ok"
 
-    return "ok", 200
+@app.route("/")
+def home():
+    return f"OKX ICT Bot Running {datetime.utcnow()}"
 
-# === Thread สำหรับรันบอทเทรดใน background ===
-def run_trading_bot():
-    while True:
-        try:
-            if bot_active:
-                trading_bot()
-        except Exception as e:
-            send_telegram(f"[CRASH] ระบบหยุดทำงาน: {str(e)}")
-        time.sleep(10)
+# === เริ่มระบบ ===
+threading.Thread(target=loop, daemon=True).start()
 
-# === main ===
-if __name__ == '__main__':
-    Thread(target=run_trading_bot).start()
-    app.run(host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
