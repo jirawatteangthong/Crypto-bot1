@@ -1,238 +1,214 @@
-
-import os
 import time
-import json
 import hmac
 import hashlib
+import base64
 import requests
-import schedule
 import threading
-from datetime import datetime
-from flask import Flask, request
+import datetime
+import json
+from flask import Flask
+import pandas as pd
 
-app = Flask(__name__)
-
-# ===== Load Env Variables =====
-API_KEY = os.getenv("e8e/82c5a-6ccd-4cb3-92a9-3f10144ecd28")
-API_SECRET = os.getenv("3E0BDFF2AF2EF11217C2DCC7E88400C3")
-API_PASSPHRASE = os.getenv("Jirawat1-")
-TELEGRAM_TOKEN = os.getenv("7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY")
-TELEGRAM_CHAT_ID = os.getenv("8104629569")
-
-SYMBOL = "BTC-USDT-SWAP"
-BASE_URL = "https://www.okx.com"
-LEVERAGE = 15
-USE_PORTFOLIO_PERCENT = 0.30
-RISK_PER_TRADE = 0.02
-
-active_position = {
-    "side": None,
-    "entry": None,
-    "tp": None,
-    "sl": None,
-    "size": None,
-    "algo_id": None,
-    "last_profit": None
+# ---------------------------- CONFIG ----------------------------
+API_KEY = 'e8e/82c5a-6ccd-4cb3-92a9-3f10144ecd28'
+API_SECRET = '3E0BDFF2AF2EF11217C2DCC7E88400C3'
+API_PASSPHRASE = 'Jirawat1-'
+TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
+TELEGRAM_CHAT_ID = '8104629569'
+SYMBOL = 'BTC-USDT'
+LEVERAGE = 13
+TRADE_PERCENTAGE = 0.3
+BASE_URL = 'https://www.okx.com'
+HEADERS = {
+    'Content-Type': 'application/json',
+    'OK-ACCESS-KEY': API_KEY,
+    'OK-ACCESS-PASSPHRASE': API_PASSPHRASE
 }
 
-bot_active = True
-start_time = time.time()
+current_order_id = None
+choch_notified = False
+fibo_notified = False
 
-# ===== Helper Functions =====
-def sign(timestamp, method, request_path, body=""):
-    msg = f"{timestamp}{method}{request_path}{body}"
-    return hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
-
-def get_headers(method, path, body=""):
-    timestamp = str(time.time())
-    signature = sign(timestamp, method, path, body)
-    return {
-        "OK-ACCESS-KEY": API_KEY,
-        "OK-ACCESS-SIGN": signature,
-        "OK-ACCESS-TIMESTAMP": timestamp,
-        "OK-ACCESS-PASSPHRASE": API_PASSPHRASE,
-        "Content-Type": "application/json"
-    }
-
+# ---------------------------- UTILS ----------------------------
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
 
-def get_price():
-    candles = get_candles("1m", 1)
-    return float(candles[-1][4])
+def get_iso_timestamp():
+    return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
 
-# ===== OKX API Calls =====
-def get_candles(tf="1H", limit=100):
-    path = f"/api/v5/market/candles?instId={SYMBOL}&bar={tf}&limit={limit}"
-    res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
-    return res["data"][::-1]
+def sign_request(method, path, body=''):
+    timestamp = get_iso_timestamp()
+    message = f'{timestamp}{method}{path}{body}'
+    mac = hmac.new(bytes(API_SECRET, 'utf-8'), bytes(message, 'utf-8'), digestmod=hashlib.sha256)
+    sign = base64.b64encode(mac.digest()).decode()
+    HEADERS.update({
+        'OK-ACCESS-SIGN': sign,
+        'OK-ACCESS-TIMESTAMP': timestamp
+    })
+    return HEADERS
+
+def get_candles(symbol, bar, limit=150):
+    url = f'{BASE_URL}/api/v5/market/candles?instId={symbol}&bar={bar}&limit={limit}'
+    r = requests.get(url)
+    df = pd.DataFrame(r.json()['data'], columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume', '_', '__'])
+    df = df.iloc[::-1]
+    df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
+    return df
+
+def detect_choch(df):
+    if len(df) < 3:
+        return None
+    high1, high2 = df.iloc[-3]['high'], df.iloc[-2]['high']
+    low1, low2 = df.iloc[-3]['low'], df.iloc[-2]['low']
+    current_high, current_low = df.iloc[-1]['high'], df.iloc[-1]['low']
+    if high2 > high1 and current_low < low2:
+        return 'bearish'
+    elif low2 < low1 and current_high > high2:
+        return 'bullish'
+    return None
 
 def get_balance():
-    path = "/api/v5/account/balance?ccy=USDT"
-    res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
-    return float(res['data'][0]['details'][0]['availBal'])
-
-def get_open_orders():
-    path = f"/api/v5/trade/orders-pending?instId={SYMBOL}"
-    res = requests.get(BASE_URL + path, headers=get_headers("GET", path)).json()
-    return res["data"]
+    path = '/api/v5/account/balance'
+    headers = sign_request('GET', path)
+    res = requests.get(BASE_URL + path, headers=headers)
+    data = res.json()['data'][0]['details']
+    for d in data:
+        if d['ccy'] == 'USDT':
+            return float(d['cashBal'])
+    return 0
 
 def place_order(side, size):
-    path = "/api/v5/trade/order"
-    data = {
+    global current_order_id
+    path = '/api/v5/trade/order'
+    body = {
         "instId": SYMBOL,
-        "tdMode": "isolated",
+        "tdMode": "cross",
         "side": side,
         "ordType": "market",
         "sz": str(size),
-        "lever": str(LEVERAGE)
+        "lever": str(LEVERAGE),
+        "posSide": "long" if side == "buy" else "short"
     }
-    body = json.dumps(data)
-    headers = get_headers("POST", path, body)
-    res = requests.post(BASE_URL + path, headers=headers, data=body).json()
-    send_telegram(f"[ORDER] {side.upper()} {SYMBOL} | Size: {size}")
-    return res
+    body_str = json.dumps(body)
+    headers = sign_request('POST', path, body_str)
+    res = requests.post(BASE_URL + path, headers=headers, data=body_str)
+    result = res.json()
+    if 'data' in result:
+        current_order_id = result['data'][0]['ordId']
+    return result
 
-def place_tp_sl(entry, sl, tp, side, size):
-    path = "/api/v5/trade/order-algo"
-    exit_side = "sell" if side == "buy" else "buy"
-    data = {
-        "instId": SYMBOL,
-        "tdMode": "isolated",
-        "side": exit_side,
-        "ordType": "oco",
-        "slTriggerPx": f"{sl:.2f}",
-        "slOrdPx": "-1",
-        "tpTriggerPx": f"{tp:.2f}",
-        "tpOrdPx": "-1",
-        "sz": str(size)
-    }
-    body = json.dumps(data)
-    headers = get_headers("POST", path, body)
-    res = requests.post(BASE_URL + path, headers=headers, data=body).json()
-    active_position["algo_id"] = res["data"][0]["algoId"]
-    return res
+def close_all_positions():
+    path = '/api/v5/trade/close-position'
+    body = {"instId": SYMBOL, "mgnMode": "cross"}
+    body_str = json.dumps(body)
+    headers = sign_request('POST', path, body_str)
+    requests.post(BASE_URL + path, headers=headers, data=body_str)
 
-def cancel_algo_order(algo_id):
-    path = "/api/v5/trade/cancel-algos"
-    data = {"instId": SYMBOL, "algoIds": [algo_id]}
-    body = json.dumps(data)
-    headers = get_headers("POST", path, body)
-    res = requests.post(BASE_URL + path, headers=headers, data=body).json()
-    return res
-
-# ===== ICT + Entry Logic (1D > H1 > M15) =====
-def detect_entry_signal():
-    m15 = get_candles("15m", 50)
-    for i in range(2, len(m15)):
-        high1 = float(m15[i - 2][2])
-        low3 = float(m15[i][3])
-        if low3 > high1:
-            return {"side": "buy", "entry": (low3 + high1) / 2}
-        low1 = float(m15[i - 2][3])
-        high3 = float(m15[i][2])
-        if high3 < low1:
-            return {"side": "sell", "entry": (high3 + low1) / 2}
+def get_position():
+    path = f'/api/v5/account/positions?instId={SYMBOL}'
+    headers = sign_request('GET', path)
+    res = requests.get(BASE_URL + path, headers=headers).json()
+    if res['data']:
+        pos = res['data'][0]
+        return {
+            "side": pos['posSide'],
+            "size": float(pos['pos']),
+            "entry_price": float(pos['avgPx']),
+            "unrealized": float(pos['upl']),
+        }
     return None
 
-def find_swing_levels(candles, side):
-    if side == "buy":
-        sl = min(float(c[3]) for c in candles[-5:])
-        tp = max(float(c[2]) for c in candles[-5:])
-    else:
-        sl = max(float(c[2]) for c in candles[-5:])
-        tp = min(float(c[3]) for c in candles[-5:])
-    return sl, tp
-
-# ===== Trade Logic =====
-def trade():
-    if not bot_active or get_open_orders():
-        return
-
-    signal = detect_entry_signal()
-    if not signal:
-        return
-
-    entry = signal["entry"]
-    side = signal["side"]
-    h1 = get_candles("1H", 20)
-    sl, tp = find_swing_levels(h1, side)
-
-    balance = get_balance()
-    risk = balance * RISK_PER_TRADE
-    size = round(risk / abs(entry - sl), 4)
-
-    place_order(side, size)
-    time.sleep(1)
-    place_tp_sl(entry, sl, tp, side, size)
-
-    active_position.update({
-        "side": side,
-        "entry": entry,
-        "tp": tp,
-        "sl": sl,
-        "size": size
-    })
-
-    send_telegram(f"[TRADE OPENED]\nSide: {side.upper()}\nEntry: {entry:.2f}\nSL: {sl:.2f}\nTP: {tp:.2f}\nSize: {size}")
-
-def monitor_position():
-    if not active_position["entry"] or not active_position["algo_id"]:
-        return
-    price = get_price()
-    entry = active_position["entry"]
-    tp = active_position["tp"]
-    side = active_position["side"]
-    size = active_position["size"]
-    tp_half = entry + (tp - entry) * 0.5 if side == "buy" else entry - (entry - tp) * 0.5
-    if (side == "buy" and price >= tp_half) or (side == "sell" and price <= tp_half):
-        cancel_algo_order(active_position["algo_id"])
-        time.sleep(1)
-        place_tp_sl(entry, entry, tp, side, size)
-        active_position["sl"] = entry
-        send_telegram(f"[SL to BE] SL moved to Breakeven at {entry:.2f}")
-        active_position["algo_id"] = None
-
-# ===== Schedule Loop =====
-def run_schedule():
-    schedule.every().hour.at(":00").do(trade)
-    schedule.every(5).minutes.do(monitor_position)
+# ---------------------------- STRATEGY LOOP ----------------------------
+def strategy_loop():
+    global choch_notified, fibo_notified, current_order_id
+    send_telegram("Bot started and running on Render 24/7")
     while True:
-        schedule.run_pending()
-        time.sleep(1)
+        try:
+            df_m15 = get_candles(SYMBOL, '15m')
+            choch = detect_choch(df_m15)
+            if choch and not choch_notified:
+                send_telegram(f"CHoCH detected on M15: {choch}")
+                choch_notified = True
 
-# ===== Telegram Webhook =====
-@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
-def telegram_webhook():
-    global bot_active
-    msg = request.json["message"]["text"].lower()
-    if "/ping" in msg:
-        send_telegram(f"à¸à¸³à¸à¸²à¸à¸à¸à¸à¸´ | à¹à¸§à¸¥à¸²: {datetime.utcnow()}")
-    elif "/uptime" in msg:
-        uptime = round((time.time() - start_time) / 3600, 2)
-        send_telegram(f"Uptime: {uptime} à¸à¸±à¹à¸§à¹à¸¡à¸")
-    elif "stop bot" in msg:
-        bot_active = False
-        send_telegram("à¸à¸­à¸à¸«à¸¢à¸¸à¸à¸à¸³à¸à¸²à¸à¹à¸¥à¹à¸§")
-    elif "resume bot" in msg:
-        bot_active = True
-        send_telegram("à¸à¸­à¸à¸à¸¥à¸±à¸à¸¡à¸²à¸à¸³à¸à¸²à¸à¹à¸¥à¹à¸§")
-    elif "à¸£à¸²à¸à¸²à¸à¸­à¸à¸à¸µà¹" in msg:
-        send_telegram(f"à¸£à¸²à¸à¸² BTC: {get_price()} USDT")
-    elif "à¸à¸¸à¸à¹à¸à¹à¸²" in msg:
-        send_telegram(f"Entry à¸¥à¹à¸²à¸ªà¸¸à¸: {active_position['entry']}")
-    elif "à¸à¸³à¹à¸£à¸¥à¹à¸²à¸ªà¸¸à¸" in msg:
-        send_telegram(f"à¸à¸³à¹à¸£à¸¥à¹à¸²à¸ªà¸¸à¸: {active_position['last_profit']}")
-    elif "à¸ªà¸à¸²à¸à¸°à¸à¸­à¸£à¹à¸" in msg:
-        send_telegram(f"USDT à¸à¸à¹à¸«à¸¥à¸·à¸­: {get_balance()}")
-    return "ok"
+                fib_high = df_m15['high'].iloc[-3]
+                fib_low = df_m15['low'].iloc[-3]
+                fib_zone = (fib_low + 0.618 * (fib_high - fib_low), fib_low + 0.786 * (fib_high - fib_low))
 
-@app.route("/")
+            last_price = float(df_m15['close'].iloc[-1])
+            if choch_notified and fib_zone[0] <= last_price <= fib_zone[1] and not fibo_notified:
+                send_telegram("Price entered Fibonacci zone")
+                fibo_notified = True
+
+                df_m5 = get_candles(SYMBOL, '5m')
+                choch_m5 = detect_choch(df_m5)
+                if choch_m5:
+                    send_telegram(f"CHoCH confirmed on M5: {choch_m5}")
+                    balance = get_balance()
+                    trade_value = balance * TRADE_PERCENTAGE * LEVERAGE
+                    mark_price = float(df_m5['close'].iloc[-1])
+                    size = round(trade_value / mark_price, 4)
+
+                    place_order("buy" if choch_m5 == "bullish" else "sell", size)
+                    send_telegram(f"Opened {choch_m5.upper()} order: Size {size}")
+                    monitor_position()
+
+                    # Reset for next cycle
+                    choch_notified = False
+                    fibo_notified = False
+                    current_order_id = None
+
+            time.sleep(30)
+        except Exception as e:
+            send_telegram(f"Error: {str(e)}")
+            time.sleep(60)
+
+# ---------------------------- POSITION MONITOR ----------------------------
+def monitor_position():
+    entry_checked = False
+    while True:
+        pos = get_position()
+        if not pos or pos['size'] == 0:
+            return
+
+        pnl = pos['unrealized']
+        entry = pos['entry_price']
+        side = pos['side']
+        size = pos['size']
+        pnl_pct = (pnl / (entry * size)) * 100
+
+        if pnl_pct <= -12:
+            send_telegram(f"SL Hit (-12%): {pnl_pct:.2f}%")
+            close_all_positions()
+            return
+        elif pnl_pct >= 30:
+            send_telegram(f"TP Hit (+30%): {pnl_pct:.2f}%")
+            close_all_positions()
+            return
+        elif pnl_pct >= 10 and not entry_checked:
+            send_telegram("Profit +10%, setting trailing SL to +2%")
+            entry_checked = True
+
+        elif entry_checked and pnl_pct <= 2:
+            send_telegram("Trailing SL Hit (+2%)")
+            close_all_positions()
+            return
+
+        time.sleep(10)
+
+# ---------------------------- FLASK SERVER ----------------------------
+app = Flask(__name__)
+
+@app.route('/')
 def home():
-    return f"ICT Bot Running - {datetime.utcnow()}"
+    return 'OKX Bot is running!'
 
-threading.Thread(target=run_schedule, daemon=True).start()
+def run_bot():
+    strategy_loop()
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+if __name__ == '__main__':
+    t = threading.Thread(target=run_bot)
+    t.daemon = True
+    t.start()
+    app.run(host='0.0.0.0', port=10000)
