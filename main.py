@@ -18,6 +18,7 @@ SYMBOL = "BTC-USDT-SWAP"
 LEVERAGE = 10
 
 app = Flask(__name__)
+send_telegram("ทดสอบจากโค้ด main.py")
 bot_active = True
 active_position = {"side": None, "entry": None, "size": None, "order_id": None}
 
@@ -99,20 +100,26 @@ def trade_loop():
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
     global bot_active
-    data = request.json
-    if "message" not in data or "text" not in data["message"]:
-        return "ignored"
+    data = request.get_json()
 
-    msg = data["message"]["text"].lower()
+    if not data or "message" not in data:
+        return "no message"
 
-    if "stop" in msg:
+    message = data["message"]
+    msg_text = message.get("text", "").lower()
+
+    if "stop" in msg_text:
         bot_active = False
         send_telegram("Bot paused")
-    elif "resume" in msg:
+    elif "resume" in msg_text:
         bot_active = True
         send_telegram("Bot resumed")
-    elif "status" in msg:
-        send_telegram(f"Bot status: {'Active' if bot_active else 'Paused'}\nPosition: {active_position}")
+    elif "status" in msg_text:
+        send_telegram(
+            f"Bot status: {'Active' if bot_active else 'Paused'}\n"
+            f"Position: {active_position}"
+        )
+
     return "ok"
 
 @app.route("/")
