@@ -11,8 +11,8 @@ from flask import Flask, request
 from threading import Thread
 
 # ========== CONFIG ==========
-API_KEY = 'e5a0da48-989e-4897-b637-d3475020fd70'
-API_SECRET = '81AF116E5773A7B094DF03844731E342'
+API_KEY = 'e8e82c5a-6ccd-4cb3-92a9-3f10144ecd28'
+API_SECRET = '3E0BDFF2AF2EF11217C2DCC7E88400C3'
 API_PASSPHRASE = 'Jirawat1-'
 BASE_URL = 'https://www.okx.com'
 SYMBOL = 'BTC-USDT-SWAP'
