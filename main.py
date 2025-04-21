@@ -52,7 +52,7 @@ def get_candles(symbol, bar, limit=150):
     url = f'{BASE_URL}/api/v5/market/candles?instId={symbol}&bar={bar}&limit={limit}'
     r = requests.get(url)
     df = pd.DataFrame(r.json()['data'], columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume', '_', '__'])
+    'timestamp', 'open', 'high', 'low', 'close', 'volume', 'volCcy', 'volCcyQuote', 'confirm'])
     df = df.iloc[::-1]
     df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
     return df
