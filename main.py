@@ -55,9 +55,12 @@ def get_balance():
 
 # ฟังก์ชันวิเคราะห์แนวโน้ม (ใช้ logic ง่าย ๆ เป็นตัวอย่าง)
 def get_trend():
-    url = f'https://www.okx.com/api/v5/market/candles?instId={SYMBOL}&bar={TIMEFRAME}&limit=5'
+    url = f'{BASE_URL}/api/v5/market/candles?instId={SYMBOL}&bar={TIMEFRAME}&limit=5'
     r = requests.get(url)
-    data = r.json()['data']
+    result = r.json()
+    if 'data' not in result or not result['data']:
+        raise Exception(f"ไม่สามารถดึงกราฟได้: {result}")
+    data = result['data']
     close_prices = [float(x[4]) for x in data][::-1]
     if close_prices[-1] > close_prices[-2] > close_prices[-3]:
         return 'long'
