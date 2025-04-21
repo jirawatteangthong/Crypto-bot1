@@ -32,16 +32,6 @@ def get_server_time():
     response = requests.get(f"{BASE_URL}/api/v5/public/time")
     return str(response.json()['data'][0]['ts'])
 
-def sign_request(timestamp, method, request_path, body=''):
-    message = f'{timestamp}{method}{request_path}{body}'
-    mac = hmac.new(API_SECRET.encode(), message.encode(), digestmod=hashlib.sha256)
-    return base64.b64encode(mac.digest()).decode()
-
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": msg}
-    requests.post(url, json=payload)
-
 def okx_request(method, path, data=None, private=False):
     timestamp = get_server_time()
     headers = {
@@ -63,9 +53,9 @@ def okx_request(method, path, data=None, private=False):
 
         res_json = r.json()
 
-        # Debug: ดู response จริงๆ ถ้าไม่มี 'data'
+        # DEBUG: ส่ง response ทั้งชุดมาให้ดูทาง Telegram
         if 'data' not in res_json:
-            send_telegram(f"[ERROR] ไม่พบ 'data':\n{res_json}")
+            send_telegram(f"[DEBUG] response จาก OKX:\n{json.dumps(res_json, indent=2)}")
             return None
 
         return res_json
