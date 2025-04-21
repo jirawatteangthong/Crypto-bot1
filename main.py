@@ -1,136 +1,111 @@
 import time
 import requests
 import json
-from datetime import datetime
-import numpy as np
-import pytz
-import talib
-import schedule
+import hmac
+import hashlib
+import base64
 import threading
 from flask import Flask, request
 import telegram
-from okx.client import Client
+from datetime import datetime
+import schedule
 
-# OKX API Configuration
-api_key = 'e8e/82c5a-6ccd-4cb3-92a9-3f10144ecd28'
-api_secret = '3E0BDFF2AF2EF11217C2DCC7E88400C3'
-passphrase = 'Jirawat1-'
+# ---------------- CONFIG ----------------
+API_KEY = 'e8e/82c5a-6ccd-4cb3-92a9-3f10144ecd28'
+API_SECRET = '3E0BDFF2AF2EF11217C2DCC7E88400C3'
+PASSPHRASE = 'Jirawat1-'
+SYMBOL = 'BTC-USDT-SWAP'
+LEVERAGE = 10
+PORTFOLIO_PERCENTAGE = 0.3
 
-# Telegram Bot Configuration
-telegram_token = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
-chat_id = '8104629569'
-bot = telegram.Bot(token=telegram_token)
+TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
+TELEGRAM_CHAT_ID = '8104629569'
+# ---------------------------------------
 
-# Initialize Flask app
 app = Flask(__name__)
+bot = telegram.Bot(token=TELEGRAM_TOKEN)
+BASE_URL = "https://www.okx.com"
 
-# OKX client
-client = Client(api_key, api_secret, passphrase)
+def get_server_timestamp():
+    url = BASE_URL + "/api/v5/public/time"
+    return requests.get(url).json()["data"][0]["ts"]
 
-# Define the symbol and leverage
-symbol = 'BTC-USDT-SWAP'
-leverage = 10
-portfolio_percentage = 0.30
+def sign(method, path, body=''):
+    timestamp = str(int(get_server_timestamp()) / 1000)
+    message = f"{timestamp}{method}{path}{body}"
+    mac = hmac.new(API_SECRET.encode(), msg=message.encode(), digestmod=hashlib.sha256)
+    sign = base64.b64encode(mac.digest()).decode()
+    return {
+        "OK-ACCESS-KEY": API_KEY,
+        "OK-ACCESS-SIGN": sign,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": PASSPHRASE,
+        "Content-Type": "application/json"
+    }
 
-# Define a function to get the current price
-def get_current_price(symbol):
-    response = client.get_market_ticker(symbol)
-    return float(response['data'][0]['last'])
-
-# Define a function to get the balance
 def get_balance():
-    response = client.get_account_balance()
-    balance = response['data'][0]['equity']
-    return float(balance)
+    path = "/api/v5/account/balance"
+    headers = sign("GET", path)
+    res = requests.get(BASE_URL + path, headers=headers).json()
+    usdt_balance = float(next(x for x in res["data"][0]["details"] if x["ccy"] == "USDT")["availBal"])
+    return usdt_balance
 
-# Function to check market structure (1D, H1)
-def check_market_structure():
-    # Fetch data for 1D and H1 timeframes
-    one_day_data = client.get_market_candles(symbol, granularity=86400, limit=100)  # 1D candles
-    one_hour_data = client.get_market_candles(symbol, granularity=3600, limit=100)  # 1H candles
+def get_price():
+    res = requests.get(BASE_URL + f"/api/v5/market/ticker?instId={SYMBOL}").json()
+    return float(res["data"][0]["last"])
 
-    # Analyze market structure: HH/LL, swing high/low
-    one_day_closes = [float(data[4]) for data in one_day_data]
-    one_hour_closes = [float(data[4]) for data in one_hour_data]
+def place_order(side, size):
+    path = "/api/v5/trade/order"
+    price = get_price()
+    data = {
+        "instId": SYMBOL,
+        "tdMode": "isolated",
+        "side": side,
+        "ordType": "market",
+        "sz": str(size),
+        "lever": str(LEVERAGE)
+    }
+    headers = sign("POST", path, json.dumps(data))
+    res = requests.post(BASE_URL + path, headers=headers, json=data).json()
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"เปิดออเดอร์ {side.upper()} ที่ราคา {price}")
+    return res
 
-    # Identify trend: Higher High / Higher Low or Lower Low / Lower High
-    hh_ll_1d = "Bullish" if one_day_closes[-1] > one_day_closes[-2] else "Bearish"
-    hh_ll_1h = "Bullish" if one_hour_closes[-1] > one_hour_closes[-2] else "Bearish"
-
-    return hh_ll_1d, hh_ll_1h
-
-# Function to send messages to Telegram
-def send_telegram_message(message):
-    bot.send_message(chat_id=chat_id, text=message)
-
-# Function to execute trade
-def execute_trade(entry_price, stop_loss, take_profit):
+def strategy():
+    price = get_price()
     balance = get_balance()
-    trade_amount = balance * portfolio_percentage / entry_price  # Use 30% of the portfolio
+    position_size = round((balance * PORTFOLIO_PERCENTAGE) * LEVERAGE / price, 3)
 
-    # Create order
-    order = client.place_order(
-        symbol=symbol,
-        side="buy",  # or "sell" based on trend
-        ord_type="market",
-        size=trade_amount,
-        leverage=leverage
-    )
+    # สมมุติ logic เบื้องต้น: ถ้าราคาลงต่ำกว่า 50,000 ให้ buy
+    if price < 50000:
+        place_order("buy", position_size)
+    elif price > 60000:
+        place_order("sell", position_size)
 
-    # Send message to Telegram
-    send_telegram_message(f"Trade executed at {entry_price}. SL: {stop_loss}, TP: {take_profit}")
+@app.route('/ping', methods=["GET"])
+def ping():
+    return "Bot is running"
 
-    # Set stop loss and take profit
-    client.set_stop_loss(symbol=symbol, stop_loss=stop_loss, order_id=order['order_id'])
-    client.set_take_profit(symbol=symbol, take_profit=take_profit, order_id=order['order_id'])
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
+    update = telegram.Update.de_json(request.get_json(force=True), bot)
+    chat_id = update.message.chat.id
+    text = update.message.text.lower()
 
-# Function to manage Stop Loss and Take Profit based on risk/reward
-def manage_risk(entry_price, direction):
-    risk_reward_ratio = 2  # Risk/Reward ratio of 1:2 or 1:3
+    if text == "/ping":
+        bot.send_message(chat_id=chat_id, text="Bot ทำงานอยู่ครับ")
+    elif text == "ราคาตอนนี้":
+        bot.send_message(chat_id=chat_id, text=f"ราคาปัจจุบัน: {get_price()} USDT")
+    elif text == "ทุนคงเหลือ":
+        bot.send_message(chat_id=chat_id, text=f"ทุน USDT: {get_balance()}")
 
-    # Calculate Stop Loss and Take Profit based on market structure
-    if direction == "Bullish":
-        stop_loss = entry_price * 0.98  # 2% stop loss for bullish
-        take_profit = entry_price * (1 + 0.02 * risk_reward_ratio)  # TP 2% profit for bullish
-    else:
-        stop_loss = entry_price * 1.02  # 2% stop loss for bearish
-        take_profit = entry_price * (1 - 0.02 * risk_reward_ratio)  # TP 2% profit for bearish
+    return "ok"
 
-    return stop_loss, take_profit
-
-# Function to check for retracements and entry points
-def check_for_entry():
-    hh_ll_1d, hh_ll_1h = check_market_structure()
-
-    # Determine market trend and potential entry
-    if hh_ll_1d == "Bullish" and hh_ll_1h == "Bullish":
-        # Look for entry in the M15 for retracement
-        entry_price = get_current_price(symbol)
-        stop_loss, take_profit = manage_risk(entry_price, "Bullish")
-        execute_trade(entry_price, stop_loss, take_profit)
-
-    elif hh_ll_1d == "Bearish" and hh_ll_1h == "Bearish":
-        # Look for entry in the M15 for retracement
-        entry_price = get_current_price(symbol)
-        stop_loss, take_profit = manage_risk(entry_price, "Bearish")
-        execute_trade(entry_price, stop_loss, take_profit)
-
-# Function to run the bot every minute
 def run_bot():
-    schedule.every(1).minute.do(check_for_entry)
-
+    schedule.every(1).minutes.do(strategy)
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-@app.route('/ping', methods=['GET'])
-def ping():
-    return "Bot is running"
-
-if __name__ == '__main__':
-    # Run the bot in a separate thread
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.start()
-
-    # Run Flask app for Telegram Webhook
-    app.run(host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    threading.Thread(target=run_bot).start()
+    app.run(host="0.0.0.0", port=5000)
