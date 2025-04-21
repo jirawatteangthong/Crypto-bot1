@@ -67,7 +67,7 @@ def place_order(side, size):
     }
     headers = sign("POST", path, json.dumps(data))
     res = requests.post(BASE_URL + path, headers=headers, json=data).json()
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"เปิดออเดอร์ {side.upper()} ที่ราคา {price}")
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"à¹à¸à¸´à¸à¸­à¸­à¹à¸à¸­à¸£à¹ {side.upper()} à¸à¸µà¹à¸£à¸²à¸à¸² {price}")
     return res
 
 def strategy():
@@ -75,7 +75,7 @@ def strategy():
     balance = get_balance()
     position_size = round((balance * PORTFOLIO_PERCENTAGE) * LEVERAGE / price, 3)
 
-    # สมมุติ logic เบื้องต้น: ถ้าราคาลงต่ำกว่า 50,000 ให้ buy
+    # à¸ªà¸¡à¸¡à¸¸à¸à¸´ logic à¹à¸à¸·à¹à¸­à¸à¸à¹à¸: à¸à¹à¸²à¸£à¸²à¸à¸²à¸¥à¸à¸à¹à¸³à¸à¸§à¹à¸² 50000 à¹à¸«à¹ buy
     if price < 50000:
         place_order("buy", position_size)
     elif price > 60000:
@@ -92,11 +92,11 @@ def webhook():
     text = update.message.text.lower()
 
     if text == "/ping":
-        bot.send_message(chat_id=chat_id, text="Bot ทำงานอยู่ครับ")
-    elif text == "ราคาตอนนี้":
-        bot.send_message(chat_id=chat_id, text=f"ราคาปัจจุบัน: {get_price()} USDT")
-    elif text == "ทุนคงเหลือ":
-        bot.send_message(chat_id=chat_id, text=f"ทุน USDT: {get_balance()}")
+        bot.send_message(chat_id=chat_id, text="Bot à¸à¸³à¸à¸²à¸à¸­à¸¢à¸¹à¹à¸à¸£à¸±à¸")
+    elif text == "à¸£à¸²à¸à¸²à¸à¸­à¸à¸à¸µà¹":
+        bot.send_message(chat_id=chat_id, text=f"à¸£à¸²à¸à¸²à¸à¸±à¸à¸à¸¸à¸à¸±à¸: {get_price()} USDT")
+    elif text == "à¸à¸¸à¸à¸à¸à¹à¸«à¸¥à¸·à¸­":
+        bot.send_message(chat_id=chat_id, text=f"à¸à¸¸à¸ USDT: {get_balance()}")
 
     return "ok"
 
