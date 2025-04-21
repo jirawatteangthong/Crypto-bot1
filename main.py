@@ -49,14 +49,30 @@ def headers(method, path, body=""):
     }
 
 def get_price():
-    path = f"/api/v5/market/ticker?instId={SYMBOL}"
-    r = requests.get(BASE_URL + path, headers=headers("GET", path))
-    return float(r.json()["data"][0]["last"])
+    try:
+        path = f"/api/v5/market/ticker?instId={SYMBOL}"
+        res = requests.get(BASE_URL + path, headers=headers("GET", path)).json()
+        if "data" in res and res["data"]:
+            return float(res["data"][0]["last"])
+        else:
+            send_telegram(f"[ERROR] Failed to get price: {res}")
+            return None
+    except Exception as e:
+        send_telegram(f"[ERROR] Exception in get_price(): {e}")
+        return None
 
 def get_balance():
-    path = "/api/v5/account/balance?ccy=USDT"
-    r = requests.get(BASE_URL + path, headers=headers("GET", path))
-    return float(r.json()["data"][0]["details"][0]["availBal"])
+    try:
+        path = "/api/v5/account/balance?ccy=USDT"
+        res = requests.get(BASE_URL + path, headers=headers("GET", path)).json()
+        if "data" in res and res["data"]:
+            return float(res["data"][0]["details"][0]["availBal"])
+        else:
+            send_telegram(f"[ERROR] Failed to get balance: {res}")
+            return 0
+    except Exception as e:
+        send_telegram(f"[ERROR] Exception in get_balance(): {e}")
+        return 0
 
 # === ORDER FUNCTIONS ===
 def place_order(side, size):
