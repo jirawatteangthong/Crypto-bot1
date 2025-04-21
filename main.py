@@ -1,184 +1,156 @@
-# main.py
-
 import time
+import json
 import hmac
 import hashlib
-import base64
-import json
 import requests
-import traceback
+import threading
+from datetime import datetime
 from flask import Flask, request
-from threading import Thread
 
-# ========== CONFIG ==========
-API_KEY = 'e8e82c5a-6ccd-4cb3-92a9-3f10144ecd28'
-API_SECRET = '3E0BDFF2AF2EF11217C2DCC7E88400C3'
-API_PASSPHRASE = 'Jirawat1-'
-BASE_URL = 'https://www.okx.com'
-SYMBOL = 'BTC-USDT-SWAP'
+# === CONFIG ===
+API_KEY = "e8e82c5a-6ccd-4cb3-92a9-3f10144ecd28"
+API_SECRET = "3E0BDFF2AF2EF11217C2DCC7E88400C3"
+API_PASSPHRASE = "Jirawat1-"
+TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
+TELEGRAM_CHAT_ID = "8104629569"
+BASE_URL = "https://www.okx.com"
+SYMBOL = "BTC-USDT-SWAP"
 LEVERAGE = 10
-CAPITAL_USAGE = 0.3  # 30%
-TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
-TELEGRAM_CHAT_ID = '8104629569'
-WEBHOOK_URL = f'/webhook/{TELEGRAM_TOKEN}'
-PORT = 5000
-# ============================
 
 app = Flask(__name__)
-bot_status = {'active': True}
-last_entry = {}
-last_pnl = "ยังไม่มีข้อมูล"
+bot_active = True
+active_position = {"side": None, "entry": None, "size": None, "order_id": None}
 
+# === UTIL ===
 def get_server_timestamp():
     try:
-        r = requests.get(f'{BASE_URL}/api/v5/public/time')
-        return r.json()['data'][0]['ts']
+        r = requests.get(f"{BASE_URL}/api/v5/public/time")
+        return str(int(r.json()['data'][0]['ts']) / 1000)
     except:
-        return str(int(time.time() * 1000))
+        return str(time.time())
 
-def sign_request(timestamp, method, request_path, body=''):
-    message = f'{timestamp}{method}{request_path}{body}'
-    mac = hmac.new(bytes(API_SECRET, 'utf-8'), message.encode('utf-8'), digestmod='sha256')
-    return base64.b64encode(mac.digest()).decode()
+def sign(ts, method, path, body=""):
+    msg = f"{ts}{method}{path}{body}"
+    return hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
-def okx_request(method, endpoint, payload=None, retry=3):
-    for attempt in range(retry):
-        try:
-            timestamp = get_server_timestamp()
-            body = json.dumps(payload) if payload else ''
-            headers = {
-                'OK-ACCESS-KEY': API_KEY,
-                'OK-ACCESS-SIGN': sign_request(timestamp, method.upper(), endpoint, body),
-                'OK-ACCESS-TIMESTAMP': str(int(timestamp) / 1000),
-                'OK-ACCESS-PASSPHRASE': API_PASSPHRASE,
-                'Content-Type': 'application/json'
-            }
-            r = requests.request(method, BASE_URL + endpoint, headers=headers, data=body)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            if attempt == retry - 1:
-                send_telegram(f"[ERROR]\n{str(e)}\n{traceback.format_exc()}")
-                return None
-            time.sleep(2)
+def headers(method, path, body=""):
+    ts = get_server_timestamp()
+    return {
+        "OK-ACCESS-KEY": API_KEY,
+        "OK-ACCESS-SIGN": sign(ts, method, path, body),
+        "OK-ACCESS-TIMESTAMP": ts,
+        "OK-ACCESS-PASSPHRASE": API_PASSPHRASE,
+        "Content-Type": "application/json"
+    }
 
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': msg})
+def send_telegram(text):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+    except:
+        print("[ERROR] Failed to send Telegram message")
+
+# === API ===
+def get_price():
+    try:
+        path = f"/api/v5/market/ticker?instId={SYMBOL}"
+        res = requests.get(BASE_URL + path, headers=headers("GET", path)).json()
+        return float(res["data"][0]["last"])
+    except Exception as e:
+        send_telegram("[ERROR] Failed to get price")
+        return None
 
 def get_balance():
-    result = okx_request('GET', '/api/v5/account/balance')
-    if result:
-        for asset in result['data'][0]['details']:
-            if asset['ccy'] == 'USDT':
-                return float(asset['cashBal'])
-    return 0
+    try:
+        path = "/api/v5/account/balance?ccy=USDT"
+        res = requests.get(BASE_URL + path, headers=headers("GET", path)).json()
+        return float(res["data"][0]["details"][0]["availBal"])
+    except Exception as e:
+        send_telegram(f"[ERROR] Failed to get balance: {str(e)}")
+        return 0
 
-def get_price():
-    result = okx_request('GET', f'/api/v5/market/ticker?instId={SYMBOL}')
-    return float(result['data'][0]['last']) if result else 0
-
-def cancel_all_orders():
-    okx_request('POST', '/api/v5/trade/cancel-all-orders', {'instId': SYMBOL})
-
-def close_all_positions():
-    okx_request('POST', '/api/v5/trade/close-position', {'instId': SYMBOL, 'mgnMode': 'isolated'})
-
-def place_order(side, size, entry_price, sl_price, tp_price):
-    # Entry Order
-    order = {
-        'instId': SYMBOL,
-        'tdMode': 'isolated',
-        'side': side,
-        'ordType': 'market',
-        'sz': str(size),
-        'lever': str(LEVERAGE),
-        'posSide': 'long' if side == 'buy' else 'short'
+def place_order(side, size):
+    path = "/api/v5/trade/order"
+    data = {
+        "instId": SYMBOL,
+        "tdMode": "isolated",
+        "side": side,
+        "ordType": "market",
+        "sz": str(size),
+        "lever": str(LEVERAGE)
     }
-    res = okx_request('POST', '/api/v5/trade/order', order)
-    if not res or res.get("code") != '0':
-        send_telegram(f"[เปิดออเดอร์ล้มเหลว] {side.upper()} {res}")
-        return
-
-    # TP/SL
-    algo = {
-        'instId': SYMBOL,
-        'tdMode': 'isolated',
-        'side': 'sell' if side == 'buy' else 'buy',
-        'ordType': 'oco',
-        'tpTriggerPx': str(tp_price),
-        'tpOrdPx': '-1',
-        'slTriggerPx': str(sl_price),
-        'slOrdPx': '-1',
-        'sz': str(size),
-        'posSide': 'long' if side == 'buy' else 'short'
-    }
-    okx_request('POST', '/api/v5/trade/order-algo', algo)
-
-    global last_entry
-    last_entry = {'price': entry_price, 'side': side, 'size': size}
-    send_telegram(f"[เปิดออเดอร์] {side.upper()}\nราคา: {entry_price}")
-
-def check_exit_conditions():
-    # This is a placeholder
-    pass
-
-def ict_strategy():
-    while True:
-        if not bot_status['active']:
-            time.sleep(10)
-            continue
-
-        try:
-            # ===== STRATEGY PLACEHOLDER =====
-            # สมมุติว่าพบโอกาสเข้า BUY
-            signal = True  # ต้องเขียนจริงในระบบจริง
-            direction = 'buy'
-            price = get_price()
-            balance = get_balance()
-            position_size = round((balance * CAPITAL_USAGE * LEVERAGE) / price, 3)
-
-            if signal:
-                sl = round(price * 0.99, 2)
-                tp = round(price * 1.02, 2)
-                place_order(direction, position_size, price, sl, tp)
-                time.sleep(60 * 15)  # รอ 15 นาที ก่อนหาจังหวะใหม่
-        except Exception as e:
-            send_telegram(f"[CRITICAL ERROR]\n{str(e)}\n{traceback.format_exc()}")
-            time.sleep(10)
-
-@app.route(WEBHOOK_URL, methods=['POST'])
-def telegram_webhook():
-    data = request.get_json()
-    if 'message' not in data: return "ok"
-    msg = data['message']
-    text = msg.get('text', '').lower()
-    user = msg['from']['first_name']
-
-    if 'ping' in text:
-        send_telegram("pong")
-    elif 'ราคา' in text:
+    body = json.dumps(data)
+    try:
+        res = requests.post(BASE_URL + path, headers=headers("POST", path, body), data=body).json()
+        order_id = res["data"][0]["ordId"]
         price = get_price()
-        send_telegram(f"ราคาปัจจุบัน: {price} USDT")
-    elif 'จุดเข้า' in text:
-        if last_entry:
-            send_telegram(f"จุดเข้า: {last_entry['price']} ({last_entry['side']}) ขนาด {last_entry['size']}")
-        else:
-            send_telegram("ยังไม่มีการเข้าออเดอร์")
-    elif 'กำไรล่าสุด' in text:
-        send_telegram(f"กำไรล่าสุด: {last_pnl}")
-    elif 'สถานะ' in text or 'status' in text:
-        status = "Active" if bot_status['active'] else "Paused"
-        send_telegram(f"สถานะบอท: {status}")
-    elif 'stop' in text:
-        bot_status['active'] = False
-        send_telegram("บอทถูกหยุดแล้ว")
-    elif 'resume' in text:
-        bot_status['active'] = True
-        send_telegram("บอทกลับมาเปิดทำงานแล้ว")
+        active_position.update({"side": side, "entry": price, "size": size, "order_id": order_id})
+        send_telegram(f"[OPEN] {side.upper()} @ {price:.2f}")
+        return True
+    except Exception as e:
+        send_telegram(f"[เปิดออเดอร์ล้มเหลว] {side.upper()} {str(e)}")
+        return False
 
+def close_order():
+    if not active_position["order_id"]:
+        return
+    side = "sell" if active_position["side"] == "buy" else "buy"
+    size = active_position["size"]
+    entry = active_position["entry"]
+    price_close = get_price()
+    pnl = (price_close - entry) * size if side == "sell" else (entry - price_close) * size
+    place_order(side, size)
+    send_telegram(f"[CLOSE] @ {price_close:.2f}\nPnL: {pnl:.2f} USDT")
+    active_position.update({"side": None, "entry": None, "size": None, "order_id": None})
+
+# === LOGIC ===
+def trade_loop():
+    while True:
+        try:
+            if not bot_active or active_position["order_id"]:
+                time.sleep(5)
+                continue
+            balance = get_balance()
+            if balance == 0:
+                time.sleep(5)
+                continue
+            size = round((balance * 0.3 * LEVERAGE) / get_price(), 3)
+            side = "buy"
+            if place_order(side, size):
+                time.sleep(600)
+                close_order()
+                time.sleep(60)
+        except Exception as e:
+            send_telegram(f"[ERROR] {str(e)}")
+            time.sleep(10)
+
+# === TELEGRAM ===
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    global bot_active
+    data = request.json
+    if "message" not in data or "text" not in data["message"]:
+        return "ignored"
+
+    msg = data["message"]["text"].lower()
+    if "stop" in msg:
+        bot_active = False
+        send_telegram("Bot paused")
+    elif "resume" in msg:
+        bot_active = True
+        send_telegram("Bot resumed")
+    elif "status" in msg:
+        send_telegram(f"Bot status: {'Active' if bot_active else 'Paused'}\nPosition: {active_position}")
     return "ok"
 
-if __name__ == '__main__':
-    Thread(target=ict_strategy).start()
-    app.run(host='0.0.0.0', port=PORT)
+@app.route("/")
+def index():
+    return "OKX Bot running"
+
+# === MAIN ===
+threading.Thread(target=trade_loop, daemon=True).start()
+
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
