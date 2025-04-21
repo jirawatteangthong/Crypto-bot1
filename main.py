@@ -39,7 +39,7 @@ def sign(ts, method, path, body=""):
     return hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
 def headers(method, path, body=""):
-    ts = str(int(okx_timestamp()))
+    ts = get_server_time()
     return {
         "OK-ACCESS-KEY": API_KEY,
         "OK-ACCESS-SIGN": sign(ts, method, path, body),
