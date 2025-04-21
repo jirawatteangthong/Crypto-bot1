@@ -60,9 +60,17 @@ def okx_request(method, path, data=None, private=False):
             r = requests.post(url, headers=headers, json=data)
         elif method == "DELETE":
             r = requests.delete(url, headers=headers)
-        return r.json()
+
+        res_json = r.json()
+
+        # Debug: ดู response จริงๆ ถ้าไม่มี 'data'
+        if 'data' not in res_json:
+            send_telegram(f"[ERROR] ไม่พบ 'data':\n{res_json}")
+            return None
+
+        return res_json
     except Exception as e:
-        send_telegram(f"Error: {e}")
+        send_telegram(f"[ERROR] Exception: {e}")
         return None
 
 # ----------------- TRADING LOGIC -------------------
