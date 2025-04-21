@@ -1,2 +1,7 @@
 flask
+python-telegram-bot==13.15
 requests
+numpy
+pytz
+schedule
+ta-lib
