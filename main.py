@@ -9,8 +9,8 @@ from datetime import datetime
 from collections import deque
 
 # ------------------- OKX CONFIG -------------------
-API_KEY = "e8e/82c5a-6ccd-4cb3-92a9-3f10144ecd28"
-API_SECRET = "3E0BDFF2AF2EF11217C2DCC7E88400C3"
+API_KEY = "0659b6f2-c86a-466a-82ec-f1a52979bc33"
+API_SECRET = "CCB0A67D53315671F599050FCD712CD1"
 PASSPHRASE = "Jirawat1-"
 BASE_URL = "https://www.okx.com"
 SYMBOL = "BTC-USDT-SWAP"
