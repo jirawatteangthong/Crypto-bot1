@@ -209,7 +209,7 @@ def check_order_status(position):
     return position
 
 def run_bot():
-    send_telegram("บอทเริ่มทำงานแล้ว")
+    send_telegram("บอทเริ่มทำงานแล้วนจ๊ะ")
     set_leverage()
 
     position = None
