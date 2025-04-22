@@ -1,5 +1,12 @@
-import time, hmac, hashlib, base64, json, requests
-from datetime import datetime, timedelta
+import time
+import requests
+import hmac
+import hashlib
+import base64
+import json
+import threading
+from datetime import datetime
+from collections import deque
 
 # ------------------- OKX CONFIG -------------------
 API_KEY = "e8e/82c5a-6ccd-4cb3-92a9-3f10144ecd28"
@@ -8,162 +15,219 @@ PASSPHRASE = "Jirawat1-"
 BASE_URL = "https://www.okx.com"
 SYMBOL = "BTC-USDT-SWAP"
 LEVERAGE = 10
-TRADE_PERCENTAGE = 0.3
+TRADE_PERCENTAGE = 0.3  # 30% ของพอร์ต
 
-# ---------------- TELEGRAM CONFIG ----------------
+# ------------------- TELEGRAM CONFIG -------------------
 TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
 CHAT_ID = "8104629569"
 
-# ---------------- SYSTEM STATE ----------------
-in_position = False
-entry_price = 0.0
-qty = 0.0
-sl_price = 0.0
-tp1_price = 0.0
-tp2_price = 0.0
-tp1_hit = False
+# ------------------- SYSTEM STATE -------------------
+state = {
+    "in_position": False,
+    "entry_price": 0.0,
+    "order_id": None,
+    "stop_loss_price": 0.0,
+    "take_profit_price": 0.0,
+    "partial_tp_done": False,
+    "break_even_done": False,
+    "trailing_sl_active": False
+}
 
-# ---------------- UTILS -------------------
+price_history = deque(maxlen=200)  # ใช้เก็บราคาย้อนหลังสำหรับ Swing
+
+# ------------------- TELEGRAM FUNCTION -------------------
+def send_telegram(msg):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = {"chat_id": CHAT_ID, "text": msg}
+        requests.post(url, data=data)
+    except Exception as e:
+        print(f"Error sending Telegram message: {e}")
+
+# ------------------- AUTH / SIGN -------------------
 def get_server_time():
-    r = requests.get(f"{BASE_URL}/api/v5/public/time")
-    return r.json()['data'][0]['ts']
+    response = requests.get(f"{BASE_URL}/api/v5/public/time")
+    return str(response.json()['data'][0]['ts'])
 
-def sign_request(timestamp, method, path, body=""):
-    message = f"{timestamp}{method}{path}{body}"
-    mac = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256)
+def sign_request(timestamp, method, request_path, body=''):
+    message = f"{timestamp}{method.upper()}{request_path}{body}"
+    mac = hmac.new(bytes(API_SECRET, encoding='utf8'), bytes(message, encoding='utf8'), digestmod=hashlib.sha256)
     return base64.b64encode(mac.digest()).decode()
 
+# ------------------- OKX REQUEST -------------------
 def okx_request(method, path, data=None, private=False):
     timestamp = get_server_time()
+    body = json.dumps(data) if data else ''
     headers = {
-        "Content-Type": "application/json"
-    }
-    if private:
-        body = json.dumps(data) if data else ""
-        headers.update({
-            "OK-ACCESS-KEY": API_KEY,
-            "OK-ACCESS-SIGN": sign_request(timestamp, method, path, body),
-            "OK-ACCESS-TIMESTAMP": timestamp,
-            "OK-ACCESS-PASSPHRASE": PASSPHRASE,
-        })
+        'OK-ACCESS-KEY': API_KEY,
+        'OK-ACCESS-SIGN': sign_request(timestamp, method, path, body),
+        'OK-ACCESS-TIMESTAMP': timestamp,
+        'OK-ACCESS-PASSPHRASE': PASSPHRASE,
+        'Content-Type': 'application/json'
+    } if private else {}
 
     url = BASE_URL + path
-    r = requests.request(method, url, headers=headers, json=data)
-    res = r.json()
-    if "data" not in res:
-        send_telegram(f"[ERROR] ไม่มี 'data': {json.dumps(res)}")
+    try:
+        if method == "GET":
+            r = requests.get(url, headers=headers)
+        elif method == "POST":
+            r = requests.post(url, headers=headers, json=data)
+        elif method == "DELETE":
+            r = requests.delete(url, headers=headers)
+
+        res = r.json()
+        if 'data' not in res:
+            send_telegram(f"[DEBUG] ไม่มี 'data':\n{json.dumps(res, indent=2)}")
+            return None
+        return res
+    except Exception as e:
+        send_telegram(f"[ERROR] EXCEPTION ใน okx_request:\n{str(e)}")
         return None
-    return res
 
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
-
+# ------------------- PRICE / BALANCE -------------------
 def get_price():
     res = okx_request("GET", f"/api/v5/market/ticker?instId={SYMBOL}")
-    if res: return float(res["data"][0]["last"])
+    if res and "data" in res:
+        return float(res["data"][0]["last"])
     return 0.0
 
 def get_balance():
     res = okx_request("GET", "/api/v5/account/balance", private=True)
-    if res:
+    if res and "data" in res:
         for d in res["data"][0]["details"]:
             if d["ccy"] == "USDT":
                 return float(d["availEq"])
     return 0.0
 
-def get_swing_price(buffer=50):
-    candles = okx_request("GET", f"/api/v5/market/candles?instId={SYMBOL}&bar=1m&limit={buffer}")
-    if candles:
-        prices = [float(c[2]) for c in candles["data"]]  # high
-        highs = max(prices)
-        lows = min([float(c[3]) for c in candles["data"]])  # low
-        return highs, lows
-    return 0.0, 0.0
-
 def set_leverage():
-    okx_request("POST", "/api/v5/account/set-leverage", {
+    return okx_request("POST", "/api/v5/account/set-leverage", {
         "instId": SYMBOL,
         "lever": str(LEVERAGE),
         "mgnMode": "isolated"
     }, private=True)
 
-def open_order():
-    global in_position, entry_price, qty, sl_price, tp1_price, tp2_price, tp1_hit
-    if in_position:
-        return
+def fetch_ohlc(tf="1H", limit=100):
+    res = okx_request("GET", f"/api/v5/market/candles?instId={SYMBOL}&bar={tf}&limit={limit}")
+    if res and "data" in res:
+        data = [[float(i) for i in item] for item in res["data"]]
+        data.reverse()  # ทำให้เป็นลำดับเวลาใหม่ -> เก่าสุดไปใหม่สุด
+        return data
+    return []
 
-    price = get_price()
-    balance = get_balance()
-    qty = round((balance * TRADE_PERCENTAGE * LEVERAGE) / price, 3)
-    highs, lows = get_swing_price()
+def find_swing_high_low(data, lookback=5):
+    swing_high, swing_low = None, None
+    for i in range(lookback, len(data)-lookback):
+        highs = [data[j][2] for j in range(i-lookback, i+lookback+1)]
+        lows = [data[j][3] for j in range(i-lookback, i+lookback+1)]
+        if data[i][2] == max(highs):
+            swing_high = data[i][2]
+        if data[i][3] == min(lows):
+            swing_low = data[i][3]
+    return swing_high, swing_low
 
-    sl_price = round(lows * 0.998, 2)
-    tp1_price = round(price * 1.015, 2)
-    tp2_price = round(price * 1.03, 2)
-    entry_price = price
-    tp1_hit = False
+def is_buy_signal():
+    h4 = fetch_ohlc("4H", 50)
+    m15 = fetch_ohlc("15m", 50)
+    m1 = fetch_ohlc("1m", 30)
+    if not h4 or not m15 or not m1:
+        return False
 
-    set_leverage()
+    sh, sl = find_swing_high_low(h4)
+    if not sh or not sl:
+        return False
 
-    okx_request("POST", "/api/v5/trade/order", {
-        "instId": SYMBOL,
-        "tdMode": "isolated",
-        "side": "buy",
-        "ordType": "market",
-        "sz": str(qty)
-    }, private=True)
-
-    in_position = True
-    send_telegram(f"เข้าออเดอร์ BUY {qty} ที่ราคา {price}\nSL: {sl_price}\nTP1: {tp1_price}, TP2: {tp2_price}")
-
-def close_position(reason=""):
-    global in_position, qty
-    if not in_position:
-        return
-    okx_request("POST", "/api/v5/trade/order", {
-        "instId": SYMBOL,
-        "tdMode": "isolated",
-        "side": "sell",
-        "ordType": "market",
-        "sz": str(qty)
-    }, private=True)
-
-    price = get_price()
-    pnl = (price - entry_price) * qty
-    send_telegram(f"ปิดออเดอร์ที่ {price} | PnL: {round(pnl, 2)}\n{reason}")
-    in_position = False
-
-def monitor():
-    global in_position, tp1_hit, sl_price
-    while True:
-        if in_position:
-            price = get_price()
-            if not tp1_hit and price >= tp1_price:
-                tp1_hit = True
-                sl_price = round(entry_price * 1.001, 2)
-                send_telegram(f"ถึง TP1 แล้ว ขยับ SL มา BE+: {sl_price}")
-            elif price >= tp2_price:
-                close_position("ถึง TP2")
-            elif price <= sl_price:
-                close_position("โดน SL")
-        else:
-            if check_entry_signal():
-                open_order()
-        time.sleep(15)
-
-def check_entry_signal():
-    now = datetime.utcnow()
-    if now.hour in [1, 2, 3]:  # ช่วง London session
-        price = get_price()
-        if price < 70000:  # ตัวอย่าง logic ICT (ควรแทนด้วย 1D > H1 > M15 จริง)
-            return True
+    last_price = get_price()
+    if sl < last_price < sh and m15[-1][4] > m15[-2][4] and m1[-1][4] > m1[-2][4]:
+        return {"side": "buy", "entry": last_price, "sl": sl * 0.997, "tp": last_price * 1.02}
     return False
 
-# ---------------- START BOT -------------------
+def is_sell_signal():
+    h4 = fetch_ohlc("4H", 50)
+    m15 = fetch_ohlc("15m", 50)
+    m1 = fetch_ohlc("1m", 30)
+    if not h4 or not m15 or not m1:
+        return False
+
+    sh, sl = find_swing_high_low(h4)
+    if not sh or not sl:
+        return False
+
+    last_price = get_price()
+    if sl < last_price < sh and m15[-1][4] < m15[-2][4] and m1[-1][4] < m1[-2][4]:
+        return {"side": "sell", "entry": last_price, "sl": sh * 1.003, "tp": last_price * 0.98}
+    return False
+
+def open_position(signal):
+    size = round(get_balance() * RISK_PER_TRADE * LEVERAGE / signal["entry"], 3)
+    order = okx_request("POST", "/api/v5/trade/order", {
+        "instId": SYMBOL,
+        "tdMode": "isolated",
+        "side": signal["side"],
+        "ordType": "market",
+        "sz": str(size)
+    }, private=True)
+
+    time.sleep(2)
+
+    # Set SL/TP
+    sl_price = round(signal["sl"], 2)
+    tp_price = round(signal["tp"], 2)
+    algo = okx_request("POST", "/api/v5/trade/order-algo", {
+        "instId": SYMBOL,
+        "tdMode": "isolated",
+        "side": "sell" if signal["side"] == "buy" else "buy",
+        "ordType": "oco",
+        "sz": str(size),
+        "tpTriggerPx": str(tp_price),
+        "tpOrdPx": "-1",
+        "slTriggerPx": str(sl_price),
+        "slOrdPx": "-1"
+    }, private=True)
+
+    send_telegram(f"เข้าออเดอร์: {signal['side'].upper()}\nราคา: {signal['entry']:.2f}\nTP: {tp_price}\nSL: {sl_price}")
+    return {"side": signal["side"], "entry": signal["entry"], "tp": tp_price, "sl": sl_price, "size": size, "status": "open"}
+
+def check_order_status(position):
+    last = get_price()
+    if not position:
+        return None
+
+    if position["side"] == "buy":
+        if last >= position["tp"]:
+            send_telegram(f"ปิดกำไร: BUY ที่ {last:.2f}")
+            return None
+        elif last <= position["sl"]:
+            send_telegram(f"โดน SL: BUY ที่ {last:.2f}")
+            return None
+    else:
+        if last <= position["tp"]:
+            send_telegram(f"ปิดกำไร: SELL ที่ {last:.2f}")
+            return None
+        elif last >= position["sl"]:
+            send_telegram(f"โดน SL: SELL ที่ {last:.2f}")
+            return None
+    return position
+
+def run_bot():
+    send_telegram("บอทเริ่มทำงานแล้ว")
+    set_leverage()
+
+    position = None
+    while True:
+        try:
+            if not position:
+                buy = is_buy_signal()
+                sell = is_sell_signal()
+                signal = buy if buy else sell
+                if signal:
+                    position = open_position(signal)
+
+            position = check_order_status(position)
+            time.sleep(15)
+        except Exception as e:
+            send_telegram(f"[ERROR LOOP] {str(e)}")
+            time.sleep(60)
+
+# เริ่มทำงานทันที
 if __name__ == "__main__":
-    try:
-        send_telegram("บอทเริ่มทำงานแล้ว")
-        monitor()
-    except Exception as e:
-        send_telegram(f"บอทหยุดทำงาน: {str(e)}")
+    run_bot()
