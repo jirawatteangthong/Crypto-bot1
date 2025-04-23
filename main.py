@@ -4,185 +4,157 @@ import hmac
 import hashlib
 import base64
 import json
-import threading
-from datetime import datetime
+import datetime
+import numpy as np
+import pytz
+import traceback
+import ccxt
+from statistics import stdev, mean
+import pandas as pd
 
-# =============== OKX CONFIG ==================
+# ----------- CONFIG ------------
 API_KEY = "0659b6f2-c86a-466a-82ec-f1a52979bc33"
 API_SECRET = "CCB0A67D53315671F599050FCD712CD1"
 PASSPHRASE = "Jirawat1-"
-BASE_URL = "https://www.okx.com"
-SYMBOL = "BTC-USDT-SWAP"
-LEVERAGE = 10
-TRADE_PERCENTAGE = 0.3
 
-# =============== TELEGRAM ====================
 TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
-CHAT_ID = "8104629569"
+TELEGRAM_CHAT_ID = "8104629569"
 
-# =============== STATE =======================
-in_position = False
-entry_price = 0.0
-order_id = None
-stop_loss_price = 0.0
-take_profit_price = 0.0
-breakeven_moved = False
-partial_tp_hit = False
-running = True
+SYMBOL = "BTC-USDT-SWAP"
+LEVERAGE = 20
+BASE_CAPITAL = 20
+RISK_PER_TRADE = 0.02  # ใช้ 2% ของทุนรวม
 
-# =============== UTILS =======================
-def send_telegram(message):
+# ----------- HELPERS ------------
+def telegram(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": CHAT_ID, "text": message}
-        requests.post(url, data=data)
-    except Exception as e:
-        print(f"Telegram error: {e}")
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+    except:
+        pass
 
-def get_server_time():
-    r = requests.get(f"{BASE_URL}/api/v5/public/time")
-    return r.json()['data'][0]['ts']
+def now_iso():
+    return datetime.datetime.now(pytz.utc).isoformat()
 
-def sign_request(timestamp, method, request_path, body=''):
-    prehash = f"{timestamp}{method}{request_path}{body}"
-    return base64.b64encode(
-        hmac.new(
-            API_SECRET.encode('utf-8'),
-            prehash.encode('utf-8'),
-            hashlib.sha256
-        ).digest()
-    ).decode()
+def retry_request(func):
+    def wrapper(*args, **kwargs):
+        for i in range(3):
+            try:
+                return func(*args, **kwargs)
+            except Exception:
+                time.sleep(1)
+        raise Exception("API failed 3 times")
+    return wrapper
 
-def okx_request(method, path, data=None, private=False):
-    timestamp = get_server_time()
-    headers = {
-        'OK-ACCESS-KEY': API_KEY,
-        'OK-ACCESS-SIGN': sign_request(timestamp, method, path, json.dumps(data) if data else ''),
-        'OK-ACCESS-TIMESTAMP': timestamp,
-        'OK-ACCESS-PASSPHRASE': PASSPHRASE,
-        'Content-Type': 'application/json'
-    } if private else {}
+# ----------- OKX SETUP ------------
+okx = ccxt.okx({
+    "apiKey": API_KEY,
+    "secret": API_SECRET,
+    "password": PASSPHRASE,
+    "enableRateLimit": True,
+    "options": {"defaultType": "swap"},
+})
+okx.set_leverage(LEVERAGE, SYMBOL)
 
-    url = BASE_URL + path
+# ----------- STRATEGY LOGIC ------------
+def get_ohlcv(symbol, timeframe, limit=100):
+    return okx.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+
+def calculate_macd(close):
+    fast = 12
+    slow = 26
+    signal = 9
+    ema_fast = np.array(pd.Series(close).ewm(span=fast).mean())
+    ema_slow = np.array(pd.Series(close).ewm(span=slow).mean())
+    macd_line = ema_fast - ema_slow
+    signal_line = pd.Series(macd_line).ewm(span=signal).mean()
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+def check_entry():
     try:
-        r = requests.request(method, url, headers=headers, json=data)
-        res_json = r.json()
-        if 'data' not in res_json:
-            send_telegram(f"[DEBUG] ไม่มี 'data':\n{json.dumps(res_json, indent=2)}")
-            return None
-        return res_json
+        h4 = get_ohlcv(SYMBOL, '4h')
+        m15 = get_ohlcv(SYMBOL, '15m')
+        m1 = get_ohlcv(SYMBOL, '1m')
+
+        h4_close = [x[4] for x in h4]
+        trend_up = h4_close[-1] > h4_close[-2] > h4_close[-3]
+
+        m15_highs = [x[2] for x in m15[-5:]]
+        m15_lows = [x[3] for x in m15[-5:]]
+        poi_high = max(m15_highs)
+        poi_low = min(m15_lows)
+
+        m1_close = [x[4] for x in m1]
+        macd, signal, hist = calculate_macd(m1_close)
+        cross_up = macd[-2] < signal[-2] and macd[-1] > signal[-1]
+
+        price = m1_close[-1]
+        price_sd = stdev(m1_close[-20:])
+        price_mean = mean(m1_close[-20:])
+        inside_deviation = abs(price - price_mean) <= 2 * price_sd
+
+        if trend_up and price <= poi_low and cross_up and inside_deviation:
+            return "long", price
+        elif not trend_up and price >= poi_high and not cross_up and inside_deviation:
+            return "short", price
+        return None, None
     except Exception as e:
-        send_telegram(f"[ERROR LOOP] {e}")
-        return None
+        telegram(f"[ERROR] Strategy check failed: {str(e)}")
+        return None, None
 
-# =============== PRICE + BALANCE ================
-def get_price():
-    res = okx_request("GET", f"/api/v5/market/ticker?instId={SYMBOL}")
-    return float(res["data"][0]["last"]) if res else 0
+# ----------- ORDER FUNCTIONS ------------
+@retry_request
+def place_order(direction, price):
+    size = round((BASE_CAPITAL * LEVERAGE * RISK_PER_TRADE) / price, 3)
+    side = 'buy' if direction == 'long' else 'sell'
+    order = okx.create_market_order(SYMBOL, side, size)
+    order_id = order['id']
 
-def get_balance():
-    res = okx_request("GET", "/api/v5/account/balance", private=True)
-    if res:
-        for d in res["data"][0]["details"]:
-            if d["ccy"] == "USDT":
-                return float(d["availEq"])
-    return 0
+    sl = price * (0.995 if direction == 'long' else 1.005)
+    tp = price * (1.01 if direction == 'long' else 0.99)
+    sl = round(sl, 2)
+    tp = round(tp, 2)
 
-# =============== STRATEGY =======================
-def get_swing_levels():
-    # จำลอง Swing H/L — ใช้ M15/M1 จริงในเวอร์ชันต่อยอด
-    price = get_price()
-    return round(price * 0.985, 2), round(price * 1.015, 2)  # SL low / high
-
-def get_entry_signal():
-    now = datetime.utcnow()
-    if now.minute % 15 == 0:
-        price = get_price()
-        if price < 70000:  # ตัวอย่าง logic
-            return True
-    return False
-
-# =============== ORDER MANAGEMENT ===============
-def open_order():
-    global in_position, entry_price, stop_loss_price, take_profit_price
-    price = get_price()
-    balance = get_balance()
-    qty = round((balance * TRADE_PERCENTAGE * LEVERAGE) / price, 3)
-    sl, tp = get_swing_levels()
-    entry_price = price
-    stop_loss_price = sl
-    take_profit_price = tp
-
-    okx_request("POST", "/api/v5/account/set-leverage", {
-        "instId": SYMBOL,
-        "lever": str(LEVERAGE),
-        "mgnMode": "isolated"
-    }, private=True)
-
-    res = okx_request("POST", "/api/v5/trade/order", {
+    okx.private_post_trade_order_algo({
         "instId": SYMBOL,
         "tdMode": "isolated",
-        "side": "buy",
-        "ordType": "market",
-        "sz": str(qty)
-    }, private=True)
+        "side": side,
+        "ordType": "oco",
+        "sz": str(size),
+        "tpTriggerPx": str(tp),
+        "tpOrdPx": "-1",
+        "slTriggerPx": str(sl),
+        "slOrdPx": "-1"
+    })
 
-    if res:
-        send_telegram(f"เข้าออเดอร์ที่ {price}\nSL: {sl}, TP: {tp}")
-        in_position = True
+    telegram(f"[ENTRY] {direction.upper()} @ {price}\nTP: {tp}\nSL: {sl}")
+    return price, tp, sl
 
-def close_position(reason):
-    global in_position, breakeven_moved, partial_tp_hit
-    okx_request("POST", "/api/v5/trade/close-position", {
-        "instId": SYMBOL,
-        "mgnMode": "isolated",
-        "posSide": "long"
-    }, private=True)
-    send_telegram(f"ปิดออเดอร์ ({reason}) ที่ราคา {get_price()}")
-    in_position = False
-    breakeven_moved = False
-    partial_tp_hit = False
+# ----------- MAIN LOOP ------------
+win_count = 0
+running = True
 
-# =============== MONITORING ======================
-def monitor_trade():
-    global in_position, breakeven_moved, partial_tp_hit
-    send_telegram("บอทเริ่มทำงานแล้ว")
-    while running:
-        try:
-            if in_position:
-                price = get_price()
-                profit_range = take_profit_price - entry_price
+telegram("บอทเริ่มทำงานแล้ว!")
 
-                # Partial TP
-                if not partial_tp_hit and price >= entry_price + profit_range * 0.5:
-                    partial_tp_hit = True
-                    send_telegram(f"[PARTIAL TP] ราคาถึง 50% TP: {price}")
-
-                # Break-even
-                if not breakeven_moved and price >= entry_price + profit_range * 0.5:
-                    stop_loss_price = entry_price
-                    breakeven_moved = True
-                    send_telegram("[BREAK-EVEN] ขยับ SL ไปที่จุดเข้า")
-
-                # TP/SL
-                if price >= take_profit_price:
-                    close_position("TP")
-                elif price <= stop_loss_price:
-                    close_position("SL")
-
-            else:
-                if get_entry_signal():
-                    open_order()
-
-            time.sleep(10)
-        except Exception as e:
-            send_telegram(f"[ERROR LOOP] {e}")
-            time.sleep(15)
-
-# =============== ENTRY ===========================
-if __name__ == "__main__":
+while running:
     try:
-        t = threading.Thread(target=monitor_trade)
-        t.start()
+        direction, entry_price = check_entry()
+        if direction:
+            price, tp, sl = place_order(direction, entry_price)
+            time.sleep(1800)  # รอ 30 นาทีต่อไม้
+            result_price = okx.fetch_ticker(SYMBOL)['last']
+            pnl = (result_price - price) if direction == "long" else (price - result_price)
+            profit = pnl * LEVERAGE * BASE_CAPITAL * RISK_PER_TRADE
+            telegram(f"[CLOSE] {direction.upper()} @ {result_price} | PnL: ${profit:.2f}")
+
+            if profit > 0:
+                win_count += 1
+                if win_count % 3 == 0:
+                    telegram("[แจ้งเตือน] ชนะครบ 3 ไม้ — แนะนำถอนกำไรครึ่งหนึ่ง!")
+
+        else:
+            time.sleep(60)
     except Exception as e:
-        send_telegram(f"[ERROR START] {e}")
+        telegram(f"[ERROR] {traceback.format_exc()}")
+        time.sleep(60)
