@@ -127,7 +127,7 @@ def place_order(direction, price, capital):
 def main_loop():
     global position_open, capital, win_count
 
-    telegram("บอทเริ่มทำงานแล้ว!")
+    telegram("ไอหนู_บอททำงานแล้ว")
     set_leverage(SYMBOL, LEVERAGE)
 
     while True:
