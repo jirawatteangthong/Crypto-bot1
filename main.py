@@ -58,7 +58,12 @@ okx.set_leverage(LEVERAGE, SYMBOL)
 
 # ----------- STRATEGY LOGIC ------------
 def get_ohlcv(symbol, timeframe, limit=100):
-    return okx.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    for _ in range(3):
+        try:
+            return okx.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        except Exception as e:
+            time.sleep(2)
+    raise Exception(f"fetch_ohlcv failed for {timeframe}")
 
 def calculate_macd(close):
     fast = 12
