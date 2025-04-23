@@ -15,16 +15,13 @@ TELEGRAM_CHAT_ID = '8104629569'
 LEVERAGE = 20
 RISK_REWARD = 2
 BASE_CAPITAL = 20
-WITHDRAW_THRESHOLD = 3  # ชนะ 3 ไม้ให้ถอนกำไร
-ORDER_SIZE_PCT = 1.0  # ใช้ทุนทั้งหมดที่มี
-TRADE_DIRECTION = None  # long หรือ short
+WITHDRAW_THRESHOLD = 3  # ถอนกำไรทุก 3 ไม้
+ORDER_SIZE_PCT = 1.0
 
-# === STATE ===
 capital = BASE_CAPITAL
 win_count = 0
 position_open = False
 
-# === INIT OKX ===
 okx = ccxt.okx({
     'apiKey': API_KEY,
     'secret': API_SECRET,
@@ -33,20 +30,22 @@ okx = ccxt.okx({
     'options': {'defaultType': 'swap'},
 })
 
-def telegram(message):
+def telegram(msg):
     try:
         requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                     params={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+                     params={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
     except:
-        print("[ERROR] Telegram failed")
+        print("[Telegram Error]")
 
-def get_ohlcv_safe(symbol, timeframe, limit=50):
-    for i in range(3):
+def get_ohlcv_safe(symbol, tf, limit=50, retries=5):
+    for i in range(retries):
         try:
-            return okx.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        except:
-            time.sleep(2)
-    raise Exception(f"fetch_ohlcv failed: {timeframe}")
+            data = okx.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
+            if data and len(data) >= limit:
+                return data
+        except Exception as e:
+            time.sleep(1)
+    raise Exception(f"fetch_ohlcv failed: {tf} (after {retries} retries)")
 
 def calculate_macd(data, fast=12, slow=26, signal=9):
     def ema(values, period):
@@ -109,7 +108,6 @@ def place_order(direction, price, capital):
     tp_price = round(price * (1 + 0.01 * RISK_REWARD) if direction == "long" else price * (1 - 0.01 * RISK_REWARD), 2)
 
     order = okx.create_market_order(SYMBOL, side, size)
-    order_id = order['id']
     telegram(f"[ENTRY] {direction.upper()} @ {price}\nSize: {size}\nTP: {tp_price}\nSL: {sl_price}")
 
     okx.private_post_trade_order_algo({
@@ -129,7 +127,7 @@ def place_order(direction, price, capital):
 def main_loop():
     global position_open, capital, win_count
 
-    telegram("ไอหนู_บอททำงานแล้ว")
+    telegram("บอทเริ่มทำงานแล้ว!")
     set_leverage(SYMBOL, LEVERAGE)
 
     while True:
@@ -140,32 +138,32 @@ def main_loop():
                 position_open = True
 
                 while True:
-                    ticker = okx.fetch_ticker(SYMBOL)
-                    current_price = ticker['last']
+                    try:
+                        ticker = okx.fetch_ticker(SYMBOL)
+                        current_price = ticker['last']
+                        if (direction == 'long' and current_price >= tp) or (direction == 'short' and current_price <= tp):
+                            profit = (tp - entry) * size if direction == "long" else (entry - tp) * size
+                            capital += profit
+                            win_count += 1
+                            telegram(f"[TP HIT] {direction.upper()} +{round(profit, 2)} USDT | Capital: {round(capital,2)}")
 
-                    if (direction == 'long' and current_price >= tp) or (direction == 'short' and current_price <= tp):
-                        profit = (tp - entry) * size if direction == "long" else (entry - tp) * size
-                        capital += profit
-                        win_count += 1
-                        telegram(f"[TP HIT] {direction.upper()} +{round(profit, 2)} USDT | Capital: {round(capital,2)}")
+                            if win_count % WITHDRAW_THRESHOLD == 0:
+                                withdraw_amount = capital / 2
+                                capital -= withdraw_amount
+                                telegram(f"[WITHDRAW] ถอนกำไรออก {round(withdraw_amount,2)} เหรียญ | เหลือ: {round(capital,2)}")
 
-                        if win_count % WITHDRAW_THRESHOLD == 0:
-                            withdraw_amount = capital / 2
-                            capital -= withdraw_amount
-                            telegram(f"[WITHDRAW] ถอนกำไรออก {round(withdraw_amount,2)} เหรียญ | เหลือ: {round(capital,2)}")
+                            position_open = False
+                            break
 
-                        position_open = False
-                        break
-
-                    elif (direction == 'long' and current_price <= sl) or (direction == 'short' and current_price >= sl):
-                        loss = (entry - sl) * size if direction == "long" else (sl - entry) * size
-                        capital -= abs(loss)
-                        telegram(f"[SL HIT] {direction.upper()} -{round(abs(loss), 2)} USDT | Capital: {round(capital,2)}")
-                        position_open = False
-                        break
-
+                        elif (direction == 'long' and current_price <= sl) or (direction == 'short' and current_price >= sl):
+                            loss = (entry - sl) * size if direction == "long" else (sl - entry) * size
+                            capital -= abs(loss)
+                            telegram(f"[SL HIT] {direction.upper()} -{round(abs(loss), 2)} USDT | Capital: {round(capital,2)}")
+                            position_open = False
+                            break
+                    except Exception as e:
+                        telegram(f"[ERROR] Price check failed: {e}")
                     time.sleep(5)
-
         time.sleep(10)
 
 if __name__ == "__main__":
