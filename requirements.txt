@@ -1,4 +1,4 @@
-ccxt==3.1.34
+ccxt==4.1.0
+requests==2.31.0
 pandas==1.5.3
-talib==0.4.0
-telegram==0.0.1
+pandas-ta==0.3.14b0
