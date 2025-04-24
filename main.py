@@ -3,10 +3,8 @@ import time
 import pandas as pd
 import numpy as np
 import logging
-import requests
 from telegram import Bot
 from datetime import datetime
-
 # ====== CONFIG ======
 API_KEY = '0659b6f2-c86a-466a-82ec-f1a52979bc33'
 API_SECRET = 'CCB0A67D53315671F599050FCD712CD1'
@@ -71,7 +69,7 @@ def set_leverage(leverage):
     try:
         okx.set_leverage(leverage, SYMBOL, {'marginMode': 'cross'})
     except Exception as e:
-        send_telegram(f"Error setting leverage: {e}")
+        send_telegram(f"ข้อผิดพลาดในการตั้งค่าเลเวอเรจ: {e}")
 
 # ====== STRATEGY CHECK ======
 def check_h4_trend():
@@ -120,36 +118,57 @@ def place_order(direction, entry_price, capital):
             'slTriggerPx': str(sl),
             'slOrdPx': '-1'
         })
-        send_telegram(f"à¹à¸à¹à¸²à¸­à¸­à¹à¸à¸­à¸£à¹: {side.upper()}\nSize: {size}\nEntry: {entry_price}\nTP: {tp}\nSL: {sl}")
+        send_telegram(f"เข้าออร์เดอร์: {side.upper()}\nขนาด: {size}\nจุดเข้า: {entry_price}\nTP: {tp}\nSL: {sl}")
         return True
     except Exception as e:
-        send_telegram(f"Error placing order: {e}")
+        send_telegram(f"ข้อผิดพลาดในการเข้าออร์เดอร์: {e}")
         return False
 
 # ====== MAIN LOOP ======
 def run_bot():
-    send_telegram("à¸à¸­à¸à¹à¸£à¸´à¹à¸¡à¸à¸³à¸à¸²à¸à¹à¸¥à¹à¸§")
+    send_telegram("บอทเริ่มทำงานแล้ววัยรุ่น!")
     capital = START_CAPITAL
-    win_count = 0
+    notified = False
+    entry_price = None
+    direction = None
 
     while True:
         try:
             positions = okx.fetch_positions([SYMBOL])
             open_pos = [p for p in positions if float(p['contracts']) > 0]
+
             if not open_pos:
-                direction, entry_price, poi = check_entry()
-                if direction:
-                    send_telegram(f"Trend H4: {check_h4_trend()}\nPOI: {poi}\nEntry M15: {entry_price}")
-                    placed = place_order(direction, entry_price, capital)
+                if notified and entry_price and direction:
+                    last_price = float(okx.fetch_ticker(SYMBOL)['last'])
+                    if direction == 'buy':
+                        pnl = (last_price - entry_price) * capital * LEVERAGE / entry_price
+                    else:
+                        pnl = (entry_price - last_price) * capital * LEVERAGE / entry_price
+
+                    pnl = round(pnl, 2)
+                    status = "กำไร" if pnl > 0 else "ขาดทุน" if pnl < 0 else "คุ้มทุน"
+                    send_telegram(f"ปิดออร์เดอร์: {status} {pnl} USDT")
+
+                    # Reset state
+                    entry_price = None
+                    direction = None
+                    notified = False
+
+                direction, entry_price_candidate, poi = check_entry()
+                if direction and not notified:
+                    send_telegram(f"แนวโน้ม H4: {check_h4_trend()}\nPOI: {poi}\nจุดเข้า M15: {entry_price_candidate}")
+                    placed = place_order(direction, entry_price_candidate, capital)
                     if placed:
+                        entry_price = entry_price_candidate
+                        notified = True
                         time.sleep(30)
-                else:
-                    send_telegram("à¸£à¸­à¸à¸±à¸à¸«à¸§à¸°à¹à¸à¹à¸²à¸­à¸­à¹à¸à¸­à¸£à¹...")
             else:
-                logger.info("à¸­à¸­à¹à¸à¸­à¸£à¹à¸¢à¸±à¸à¹à¸à¸´à¸à¸­à¸¢à¸¹à¹")
+                logger.info("มีออร์เดอร์เปิดอยู่แล้ว")
+
             time.sleep(60)
+
         except Exception as e:
-            send_telegram(f"Bot Error: {e}")
+            send_telegram(f"ข้อผิดพลาดของบอท: {e}")
             time.sleep(60)
 
 if __name__ == '__main__':
