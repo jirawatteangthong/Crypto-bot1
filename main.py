@@ -99,7 +99,9 @@ def check_entry():
 
 # ====== ORDER MANAGER ======
 def place_order(direction, entry_price, capital):
-    size = round((capital * LEVERAGE) / entry_price, 3)
+    raw_size = (capital * LEVERAGE) / entry_price
+    size = max(round(raw_size, 3), 0.01)  # ปัดทศนิยม 3 ตำแหน่ง และขั้นต่ำ 0.01 BTC
+
     sl = round(entry_price * (0.99 if direction == 'buy' else 1.01), 2)
     tp = round(entry_price * (1 + 0.02) if direction == 'buy' else entry_price * (1 - 0.02), 2)
     side = 'buy' if direction == 'buy' else 'sell'
@@ -123,7 +125,6 @@ def place_order(direction, entry_price, capital):
     except Exception as e:
         send_telegram(f"ข้อผิดพลาดในการเข้าออร์เดอร์: {e}")
         return False
-
 # ====== MAIN LOOP ======
 def run_bot():
     send_telegram("บอทเริ่มทำงานแล้ววัยรุ่น!")
