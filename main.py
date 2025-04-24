@@ -62,14 +62,12 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
 
 def check_entry():
     try:
-        h4 = get_ohlcv_safe(SYMBOL, '4h')
-        time.sleep(1)
+        h1 = get_ohlcv_safe(SYMBOL, '1h')
         m15 = get_ohlcv_safe(SYMBOL, '15m')
-        time.sleep(1)
         m1 = get_ohlcv_safe(SYMBOL, '1m')
 
-        h4_close = [x[4] for x in h4]
-        trend_up = h4_close[-1] > h4_close[-2] > h4_close[-3]
+        h1_close = [x[4] for x in h1]
+        trend_up_h1 = h1_close[-1] > h1_close[-2] > h1_close[-3]  # H1 trend check (Uptrend)
 
         m15_highs = [x[2] for x in m15[-5:]]
         m15_lows = [x[3] for x in m15[-5:]]
@@ -78,16 +76,20 @@ def check_entry():
 
         m1_close = [x[4] for x in m1]
         macd, signal, hist = calculate_macd(m1_close)
-        cross_up = macd[-2] < signal[-2] and macd[-1] > signal[-1]
+        cross_up = macd[-2] < signal[-2] and macd[-1] > signal[-1]  # MACD cross-up
+        cross_down = macd[-2] > signal[-2] and macd[-1] < signal[-1]  # MACD cross-down
         price = m1_close[-1]
         price_sd = stdev(m1_close[-20:])
         price_mean = mean(m1_close[-20:])
         inside_deviation = abs(price - price_mean) <= 2 * price_sd
 
-        if trend_up and price <= poi_low and cross_up and inside_deviation:
+        # ตรวจสอบกรณีเทรนด์ขาขึ้น (Uptrend) และเข้าออเดอร์ Buy
+        if trend_up_h1 and price <= poi_low and cross_up and inside_deviation:
             return "long", price
-        elif not trend_up and price >= poi_high and not cross_up and inside_deviation:
+        # ตรวจสอบกรณีเทรนด์ขาลง (Downtrend) และเข้าออเดอร์ Short
+        elif not trend_up_h1 and price >= poi_high and cross_down and inside_deviation:
             return "short", price
+        
         return None, None
     except Exception as e:
         telegram(f"[ERROR] Strategy check failed: {str(e)}")
