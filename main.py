@@ -1,177 +1,141 @@
+# main.py - บอทเทรด OKX (All-in + Compound + SL/TP ตามโครงสร้าง + ปรับ Leverage อัตโนมัติ)
 import ccxt
 import time
 import pandas as pd
 import numpy as np
-import logging
-from telegram import Bot
-from datetime import datetime
-# ====== CONFIG ======
-API_KEY = '0659b6f2-c86a-466a-82ec-f1a52979bc33'
-API_SECRET = 'CCB0A67D53315671F599050FCD712CD1'
-API_PASSPHRASE = 'Jirawat1-'
+import requests
+
 TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
 TELEGRAM_CHAT_ID = '8104629569'
-SYMBOL = 'BTC-USDT-SWAP'
-LEVERAGE = 20
-START_CAPITAL = 40  # USDT
-RISK_REWARD = 2
-TP_REACHED_BE_PERCENT = 0.5  # 50%
-TIMEFRAMES = {'H4': '4h', 'M15': '15m', 'M1': '1m'}
-
-# ====== INIT ======
-bot = Bot(token=TELEGRAM_TOKEN)
 
 okx = ccxt.okx({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'password': API_PASSPHRASE,
+    'apiKey': '0659b6f2-c86a-466a-82ec-f1a52979bc33',
+    'secret': 'CCB0A67D53315671F599050FCD712CD1',
+    'password': 'Jirawat1-',
     'enableRateLimit': True,
-    'options': {'defaultType': 'swap'}
+    'options': {
+        'defaultType': 'future'
+    }
 })
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+SYMBOL = 'BTC-USDT-SWAP'
+LEVERAGE_CAP = 20
+RR_RATIO = 2
 
-# ====== UTILS ======
-def send_telegram(msg):
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
     try:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-    except Exception as e:
-        print(f"Telegram error: {e}")
+        requests.post(url, data=data)
+    except:
+        print("Failed to send Telegram message")
+
+def get_balance():
+    balance = okx.fetch_balance()
+    return float(balance['total']['USDT'])
 
 def get_ohlcv_safe(symbol, timeframe, limit=100):
-    for _ in range(5):
+    for _ in range(3):
         try:
-            data = okx.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            return df
-        except Exception as e:
-            logger.warning(f"fetch_ohlcv error: {e}, retrying...")
-            time.sleep(2)
-    raise Exception(f"Failed to get OHLCV for {symbol}")
+            return okx.fetch_ohlcv(symbol, timeframe, limit=limit)
+        except:
+            time.sleep(1)
+    return []
 
-def get_macd(df, fast=12, slow=26, signal=9):
-    df['ema_fast'] = df['close'].ewm(span=fast, adjust=False).mean()
-    df['ema_slow'] = df['close'].ewm(span=slow, adjust=False).mean()
-    df['macd'] = df['ema_fast'] - df['ema_slow']
-    df['signal'] = df['macd'].ewm(span=signal, adjust=False).mean()
+def calculate_std_band(df, std_factor=2):
+    df['ma'] = df['close'].rolling(window=20).mean()
+    df['std'] = df['close'].rolling(window=20).std()
+    df['upper'] = df['ma'] + std_factor * df['std']
+    df['lower'] = df['ma'] - std_factor * df['std']
     return df
 
-def calculate_std_channel(df, mult=2):
-    mean = df['close'].rolling(20).mean()
-    std = df['close'].rolling(20).std()
-    df['upper'] = mean + mult * std
-    df['lower'] = mean - mult * std
+def macd(df):
+    df['ema12'] = df['close'].ewm(span=12).mean()
+    df['ema26'] = df['close'].ewm(span=26).mean()
+    df['macd'] = df['ema12'] - df['ema26']
+    df['signal'] = df['macd'].ewm(span=9).mean()
     return df
 
-def set_leverage(leverage):
-    try:
-        okx.set_leverage(leverage, SYMBOL, {'marginMode': 'cross'})
-    except Exception as e:
-        send_telegram(f"ข้อผิดพลาดในการตั้งค่าเลเวอเรจ: {e}")
+def get_trend_h1():
+    df = pd.DataFrame(get_ohlcv_safe(SYMBOL, '1h', 50), columns=['ts','o','h','l','c','v'])
+    if df.empty:
+        return None
+    return 'up' if df['c'].iloc[-1] > df['c'].iloc[-20] else 'down'
 
-# ====== STRATEGY CHECK ======
-def check_h4_trend():
-    df = get_ohlcv_safe(SYMBOL, TIMEFRAMES['H4'], 100)
-    return 'bullish' if df['close'].iloc[-1] > df['close'].iloc[-2] else 'bearish'
+def get_poi_m15():
+    df = pd.DataFrame(get_ohlcv_safe(SYMBOL, '15m', 50), columns=['ts','o','h','l','c','v'])
+    if df.empty:
+        return None
+    return {'high': df['h'].max(), 'low': df['l'].min()}
 
-def find_poi(df):
-    return df['low'].iloc[-5] if check_h4_trend() == 'bullish' else df['high'].iloc[-5]
+def entry_signal_m1(trend, poi):
+    df = pd.DataFrame(get_ohlcv_safe(SYMBOL, '1m', 100), columns=['ts','o','h','l','c','v'])
+    if df.empty:
+        return None
+    df = df.astype(float)
+    df = macd(df)
+    df = calculate_std_band(df)
+    last = df.iloc[-1]
 
-def check_entry():
-    trend = check_h4_trend()
-    df_15 = get_ohlcv_safe(SYMBOL, TIMEFRAMES['M15'], 50)
-    df_1 = get_ohlcv_safe(SYMBOL, TIMEFRAMES['M1'], 50)
-    poi = find_poi(df_15)
-    df_1 = get_macd(df_1)
-    df_1 = calculate_std_channel(df_1)
+    if trend == 'up' and last['macd'] > last['signal'] and last['l'] <= poi['low'] and poi['low'] >= last['lower']:
+        return 'buy', last['c']
+    if trend == 'down' and last['macd'] < last['signal'] and last['h'] >= poi['high'] and poi['high'] <= last['upper']:
+        return 'sell', last['c']
+    return None
 
-    price = df_1['close'].iloc[-1]
-    macd_cross = df_1['macd'].iloc[-2] < df_1['signal'].iloc[-2] and df_1['macd'].iloc[-1] > df_1['signal'].iloc[-1]
-    in_std_range = df_1['lower'].iloc[-1] < price < df_1['upper'].iloc[-1]
+def calculate_sl_tp(entry_price, direction, swing_sl_price):
+    sl = swing_sl_price
+    if direction == 'buy':
+        tp = entry_price + (entry_price - sl) * RR_RATIO
+    else:
+        tp = entry_price - (sl - entry_price) * RR_RATIO
+    return sl, tp
 
-    if trend == 'bullish' and price <= poi and macd_cross and in_std_range:
-        return 'buy', price, poi
-    elif trend == 'bearish' and price >= poi and macd_cross and in_std_range:
-        return 'sell', price, poi
-    return None, None, None
+def calculate_leverage(entry_price, sl_price, capital):
+    risk_per_unit = abs(entry_price - sl_price)
+    position_size = capital / risk_per_unit
+    position_value = position_size * entry_price
+    leverage = min(position_value / capital, LEVERAGE_CAP)
+    return round(leverage)
 
-# ====== ORDER MANAGER ======
-def place_order(direction, entry_price, capital):
-    raw_size = (capital * LEVERAGE) / entry_price
-    size = max(round(raw_size, 3), 0.01)  # ปัดทศนิยม 3 ตำแหน่ง และขั้นต่ำ 0.01 BTC
-
-    sl = round(entry_price * (0.99 if direction == 'buy' else 1.01), 2)
-    tp = round(entry_price * (1 + 0.02) if direction == 'buy' else entry_price * (1 - 0.02), 2)
+def open_order(direction, entry_price, sl_price, tp_price, size, leverage):
     side = 'buy' if direction == 'buy' else 'sell'
+    okx.set_leverage(leverage, SYMBOL, {'marginMode': 'cross'})
+    send_telegram(f"เข้าออเดอร์ {side.upper()} @ {entry_price}\nSL: {sl_price} | TP: {tp_price}")
+    return okx.private_post_trade_order_algo({
+        'instId': SYMBOL,
+        'tdMode': 'cross',
+        'side': side,
+        'ordType': 'oco',
+        'sz': size,
+        'tpTriggerPx': str(tp_price),
+        'tpOrdPx': '-1',
+        'slTriggerPx': str(sl_price),
+        'slOrdPx': '-1'
+    })
 
+# MAIN LOOP
+while True:
     try:
-        order = okx.create_market_order(SYMBOL, side, size)
-        time.sleep(1)
-        okx.private_post_trade_order_algo({
-            'instId': SYMBOL,
-            'tdMode': 'cross',
-            'side': 'sell' if side == 'buy' else 'buy',
-            'ordType': 'oco',
-            'sz': size,
-            'tpTriggerPx': str(tp),
-            'tpOrdPx': '-1',
-            'slTriggerPx': str(sl),
-            'slOrdPx': '-1'
-        })
-        send_telegram(f"เข้าออร์เดอร์: {side.upper()}\nขนาด: {size}\nจุดเข้า: {entry_price}\nTP: {tp}\nSL: {sl}")
-        return True
+        open_positions = okx.fetch_positions([SYMBOL])
+        has_position = any(float(pos['contracts']) > 0 for pos in open_positions)
+        if has_position:
+            time.sleep(30)
+            continue
+
+        trend = get_trend_h1()
+        poi = get_poi_m15()
+        signal = entry_signal_m1(trend, poi)
+
+        if signal:
+            direction, entry_price = signal
+            swing_price = poi['low'] if direction == 'buy' else poi['high']
+            sl_price, tp_price = calculate_sl_tp(entry_price, direction, swing_price)
+            capital = get_balance()
+            leverage = calculate_leverage(entry_price, sl_price, capital)
+            size = round((capital * leverage) / entry_price, 3)
+            open_order(direction, entry_price, sl_price, tp_price, size, leverage)
+
     except Exception as e:
-        send_telegram(f"ข้อผิดพลาดในการเข้าออร์เดอร์: {e}")
-        return False
-# ====== MAIN LOOP ======
-def run_bot():
-    send_telegram("บอทเริ่มทำงานแล้ววัยรุ่น!")
-    capital = START_CAPITAL
-    notified = False
-    entry_price = None
-    direction = None
-
-    while True:
-        try:
-            positions = okx.fetch_positions([SYMBOL])
-            open_pos = [p for p in positions if float(p['contracts']) > 0]
-
-            if not open_pos:
-                if notified and entry_price and direction:
-                    last_price = float(okx.fetch_ticker(SYMBOL)['last'])
-                    if direction == 'buy':
-                        pnl = (last_price - entry_price) * capital * LEVERAGE / entry_price
-                    else:
-                        pnl = (entry_price - last_price) * capital * LEVERAGE / entry_price
-
-                    pnl = round(pnl, 2)
-                    status = "กำไร" if pnl > 0 else "ขาดทุน" if pnl < 0 else "คุ้มทุน"
-                    send_telegram(f"ปิดออร์เดอร์: {status} {pnl} USDT")
-
-                    # Reset state
-                    entry_price = None
-                    direction = None
-                    notified = False
-
-                direction, entry_price_candidate, poi = check_entry()
-                if direction and not notified:
-                    send_telegram(f"แนวโน้ม H4: {check_h4_trend()}\nPOI: {poi}\nจุดเข้า M15: {entry_price_candidate}")
-                    placed = place_order(direction, entry_price_candidate, capital)
-                    if placed:
-                        entry_price = entry_price_candidate
-                        notified = True
-                        time.sleep(30)
-            else:
-                logger.info("มีออร์เดอร์เปิดอยู่แล้ว")
-
-            time.sleep(60)
-
-        except Exception as e:
-            send_telegram(f"ข้อผิดพลาดของบอท: {e}")
-            time.sleep(60)
-
-if __name__ == '__main__':
-    set_leverage(LEVERAGE)
-    run_bot()
+        send_telegram(f"Error: {e}")
+    time.sleep(10)
