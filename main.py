@@ -1,141 +1,154 @@
-# main.py - บอทเทรด OKX (All-in + Compound + SL/TP ตามโครงสร้าง + ปรับ Leverage อัตโนมัติ)
 import ccxt
-import time
 import pandas as pd
-import numpy as np
-import requests
+import talib
+import time
+import telegram
+import math
 
-TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
-TELEGRAM_CHAT_ID = '8104629569'
-
-okx = ccxt.okx({
-    'apiKey': '0659b6f2-c86a-466a-82ec-f1a52979bc33',
-    'secret': 'CCB0A67D53315671F599050FCD712CD1',
-    'password': 'Jirawat1-',
-    'enableRateLimit': True,
-    'options': {
-        'defaultType': 'future'
-    }
+# ตั้งค่าการเชื่อมต่อกับ OKX
+api_key = '0659b6f2-c86a-466a-82ec-f1a52979bc33'
+api_secret = 'CCB0A67D53315671F599050FCD712CD1'
+password = 'Jirawat1-'
+exchange = ccxt.okx({
+    'apiKey': api_key,
+    'secret': api_secret,
+    'password': password
 })
 
-SYMBOL = 'BTC-USDT-SWAP'
-LEVERAGE_CAP = 20
-RR_RATIO = 2
+# ตั้งค่า Telegram
+telegram_bot = telegram.Bot(token='7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY')
+chat_id = '8104629569'
 
+# ฟังก์ชันแจ้งเตือนผ่าน Telegram
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
-    try:
-        requests.post(url, data=data)
-    except:
-        print("Failed to send Telegram message")
+    telegram_bot.send_message(chat_id=chat_id, text=message)
 
-def get_balance():
-    balance = okx.fetch_balance()
-    return float(balance['total']['USDT'])
+# ฟังก์ชันเช็กเทรนด์จาก H1
+def check_trend_h1():
+    ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1h', limit=100)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['high_prev'] = df['high'].shift(1)
+    df['low_prev'] = df['low'].shift(1)
+    
+    if df['high'].iloc[-1] > df['high_prev'].iloc[-1] and df['low'].iloc[-1] > df['low_prev'].iloc[-1]:
+        return 'uptrend'
+    elif df['high'].iloc[-1] < df['high_prev'].iloc[-1] and df['low'].iloc[-1] < df['low_prev'].iloc[-1]:
+        return 'downtrend'
+    return 'neutral'
 
-def get_ohlcv_safe(symbol, timeframe, limit=100):
-    for _ in range(3):
-        try:
-            return okx.fetch_ohlcv(symbol, timeframe, limit=limit)
-        except:
-            time.sleep(1)
-    return []
+# ฟังก์ชันหา POI จาก M15
+def find_poi_m15():
+    ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=100)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    low_recent = df['low'].min()
+    return low_recent
 
-def calculate_std_band(df, std_factor=2):
-    df['ma'] = df['close'].rolling(window=20).mean()
-    df['std'] = df['close'].rolling(window=20).std()
-    df['upper'] = df['ma'] + std_factor * df['std']
-    df['lower'] = df['ma'] - std_factor * df['std']
-    return df
+# ฟังก์ชันคอนเฟิร์มจุดเข้า (MACD + Standard Deviation)
+def confirm_entry_m1():
+    ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1m', limit=100)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    
+    # คำนวณ MACD
+    macd, signal, hist = talib.MACD(df['close'], fastperiod=12, slowperiod=26, signalperiod=9)
+    macd_cross = macd.iloc[-1] > signal.iloc[-1]
+    
+    # คำนวณ Standard Deviation
+    std_dev = df['close'].std()
+    price_in_std_range = df['close'].iloc[-1] < (df['close'].mean() + 2 * std_dev) and df['close'].iloc[-1] > (df['close'].mean() - 2 * std_dev)
+    
+    if macd_cross and price_in_std_range:
+        return True
+    return False
 
-def macd(df):
-    df['ema12'] = df['close'].ewm(span=12).mean()
-    df['ema26'] = df['close'].ewm(span=26).mean()
-    df['macd'] = df['ema12'] - df['ema26']
-    df['signal'] = df['macd'].ewm(span=9).mean()
-    return df
+# ฟังก์ชันคำนวณขนาดออเดอร์และ Leverage
+def calculate_position_size(balance, sl_distance, leverage=None):
+    risk = 0.02  # ความเสี่ยง 2% ของทุน
+    position_size = (balance * risk) / sl_distance
+    
+    if leverage:
+        position_size *= leverage
+    return position_size
 
-def get_trend_h1():
-    df = pd.DataFrame(get_ohlcv_safe(SYMBOL, '1h', 50), columns=['ts','o','h','l','c','v'])
-    if df.empty:
-        return None
-    return 'up' if df['c'].iloc[-1] > df['c'].iloc[-20] else 'down'
+# ฟังก์ชันคำนวณ Leverage จาก SL
+def calculate_leverage(sl_distance, balance):
+    risk_per_trade = 0.02  # เสี่ยง 2% ของทุน
+    required_margin = sl_distance * risk_per_trade
+    leverage = balance / required_margin
+    return leverage
 
-def get_poi_m15():
-    df = pd.DataFrame(get_ohlcv_safe(SYMBOL, '15m', 50), columns=['ts','o','h','l','c','v'])
-    if df.empty:
-        return None
-    return {'high': df['h'].max(), 'low': df['l'].min()}
+# ฟังก์ชันเปิดออเดอร์พร้อม TP/SL (OCO)
+def place_order_oco(symbol, position_size, sl_price, tp_price):
+    params = {
+        'stop_loss_price': sl_price,
+        'take_profit_price': tp_price,
+    }
+    order = exchange.create_market_buy_order(symbol, position_size, params=params)
+    send_telegram(f"Order placed: {order}")
+    return order
 
-def entry_signal_m1(trend, poi):
-    df = pd.DataFrame(get_ohlcv_safe(SYMBOL, '1m', 100), columns=['ts','o','h','l','c','v'])
-    if df.empty:
-        return None
-    df = df.astype(float)
-    df = macd(df)
-    df = calculate_std_band(df)
-    last = df.iloc[-1]
+# ฟังก์ชันตรวจสอบผลลัพธ์ของออเดอร์
+def check_order_closed(order_id):
+    order = exchange.fetch_order(order_id, 'BTC/USDT')
+    if order['status'] == 'closed':
+        send_telegram(f"Order {order_id} closed")
+        return True
+    return False
 
-    if trend == 'up' and last['macd'] > last['signal'] and last['l'] <= poi['low'] and poi['low'] >= last['lower']:
-        return 'buy', last['c']
-    if trend == 'down' and last['macd'] < last['signal'] and last['h'] >= poi['high'] and poi['high'] <= last['upper']:
-        return 'sell', last['c']
+# ฟังก์ชันปรับ SL และ Leverage ถ้าทำกำไรได้เกิน 50% ของ TP
+def adjust_sl_and_leverage(order_id, tp_price, current_price, sl_price, leverage):
+    # คำนวณ % กำไรที่ทำได้
+    profit_percent = (current_price - sl_price) / (tp_price - sl_price)
+    
+    if profit_percent >= 0.5:  # ถ้ากำไรได้เกิน 50% ของ TP
+        new_sl = sl_price  # ขยับ SL เป็น break-even
+        new_leverage = min(leverage * 1.2, 50)  # ปรับ Leverage เพิ่มขึ้น (ไม่เกิน 50x)
+        
+        # ปรับ SL และ Leverage
+        order = exchange.create_market_order('BTC/USDT', order_id, params={
+            'stop_loss_price': new_sl,
+            'leverage': new_leverage
+        })
+        
+        send_telegram(f"SL moved to break-even and leverage increased to {new_leverage}x.")
+        return order
     return None
 
-def calculate_sl_tp(entry_price, direction, swing_sl_price):
-    sl = swing_sl_price
-    if direction == 'buy':
-        tp = entry_price + (entry_price - sl) * RR_RATIO
+# ฟังก์ชันหลัก
+def main():
+    balance = exchange.fetch_balance()['total']['USDT']
+    trend = check_trend_h1()
+    
+    if trend == 'uptrend':
+        poi = find_poi_m15()
+        if confirm_entry_m1():
+            sl_distance = abs(poi - balance)  # คำนวณระยะ SL
+            leverage = calculate_leverage(sl_distance, balance)
+            position_size = calculate_position_size(balance, sl_distance, leverage)
+            
+            # คำนวณ TP ตามกราฟ (ใช้แนวต้านหรือแนวรับที่สำคัญ)
+            tp_price = balance * 1.02  # ตั้ง TP ที่เป็นระยะที่เหมาะสมกับกราฟ
+            
+            sl_price = balance * 0.98  # ตั้ง SL ที่ -2% ของราคาปัจจุบัน
+            
+            order = place_order_oco('BTC/USDT', position_size, sl_price, tp_price)
+            time.sleep(10)
+            
+            # หลังจากออเดอร์เปิดแล้ว ให้ตรวจสอบว่าออเดอร์ทำกำไรได้เกิน 50% ของ TP หรือยัง
+            if check_order_closed(order['id']):
+                current_price = exchange.fetch_ticker('BTC/USDT')['last']  # ราคาปัจจุบัน
+                adjust_sl_and_leverage(order['id'], tp_price, current_price, sl_price, leverage)
+                # อัปเดตทุนหลังจากผลลัพธ์
+                balance = exchange.fetch_balance()['total']['USDT']
+                send_telegram(f"New balance: {balance}")
+                
+                # ถ้าชนะ 3 ครั้ง ถอนครึ่งหนึ่ง
+                if balance > 3 * 20:  # ถ้าเป็นกำไร 3 ไม้
+                    send_telegram(f"Withdraw half of the profit: {balance / 2}")
+                    
     else:
-        tp = entry_price - (sl - entry_price) * RR_RATIO
-    return sl, tp
+        send_telegram("No valid trend, skipping trade.")
 
-def calculate_leverage(entry_price, sl_price, capital):
-    risk_per_unit = abs(entry_price - sl_price)
-    position_size = capital / risk_per_unit
-    position_value = position_size * entry_price
-    leverage = min(position_value / capital, LEVERAGE_CAP)
-    return round(leverage)
-
-def open_order(direction, entry_price, sl_price, tp_price, size, leverage):
-    side = 'buy' if direction == 'buy' else 'sell'
-    okx.set_leverage(leverage, SYMBOL, {'marginMode': 'cross'})
-    send_telegram(f"เข้าออเดอร์ {side.upper()} @ {entry_price}\nSL: {sl_price} | TP: {tp_price}")
-    return okx.private_post_trade_order_algo({
-        'instId': SYMBOL,
-        'tdMode': 'cross',
-        'side': side,
-        'ordType': 'oco',
-        'sz': size,
-        'tpTriggerPx': str(tp_price),
-        'tpOrdPx': '-1',
-        'slTriggerPx': str(sl_price),
-        'slOrdPx': '-1'
-    })
-
-# MAIN LOOP
-while True:
-    try:
-        open_positions = okx.fetch_positions([SYMBOL])
-        has_position = any(float(pos['contracts']) > 0 for pos in open_positions)
-        if has_position:
-            time.sleep(30)
-            continue
-
-        trend = get_trend_h1()
-        poi = get_poi_m15()
-        signal = entry_signal_m1(trend, poi)
-
-        if signal:
-            direction, entry_price = signal
-            swing_price = poi['low'] if direction == 'buy' else poi['high']
-            sl_price, tp_price = calculate_sl_tp(entry_price, direction, swing_price)
-            capital = get_balance()
-            leverage = calculate_leverage(entry_price, sl_price, capital)
-            size = round((capital * leverage) / entry_price, 3)
-            open_order(direction, entry_price, sl_price, tp_price, size, leverage)
-
-    except Exception as e:
-        send_telegram(f"Error: {e}")
-    time.sleep(10)
+if __name__ == "__main__":
+    while True:
+        main()
+        time.sleep(60)  # เช็กทุกๆ 1 นาที
