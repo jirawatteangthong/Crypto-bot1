@@ -13,14 +13,14 @@ TELEGRAM_CHAT_ID = '8104629569'
 
 LEVERAGE           = 20
 BASE_CAPITAL       = 20
-WITHDRAW_THRESHOLD = 3    # ถอนทุก 3 ไม้
-BE_TRIGGER_RATIO   = 0.5  # 50% ของทางไป TP
+WITHDRAW_THRESHOLD = 3      # ถอนทุก 3 ไม้
+BE_TRIGGER_RATIO   = 0.5    # 50% ของทางไป TP
 
 capital       = BASE_CAPITAL
 win_count     = 0
 position_open = False
 
-# === OKX API CLIENT ===
+# === OKX CLIENT ===
 okx = ccxt.okx({
     'apiKey': API_KEY,
     'secret': API_SECRET,
@@ -29,15 +29,15 @@ okx = ccxt.okx({
     'options': {'defaultType': 'swap'},
 })
 
-# === TELEGRAM FUNCTION WITH DEBUG ===
+# === TELEGRAM (with debug) ===
 def telegram(msg):
     try:
-        print("Sending Telegram:", msg)
-        resp = requests.get(
+        print("→ Telegram:", msg)
+        r = requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             params={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
         )
-        print("Telegram response:", resp.status_code, resp.text)
+        print("  status:", r.status_code, "resp:", r.text)
     except Exception as e:
         print("[Telegram Error]", e)
 
@@ -54,22 +54,21 @@ def get_ohlcv_safe(symbol, tf, limit=50, retries=5):
     raise Exception(f"fetch_ohlcv failed: {tf}")
 
 # === MACD CALCULATION ===
-def calculate_macd(data, fast=12, slow=26, signal=9):
-    def ema(vals, period):
-        k = 2/(period+1)
-        e = vals[0]
+def calculate_macd(vals, fast=12, slow=26, signal=9):
+    def ema(arr, n):
+        k = 2/(n+1)
+        e = arr[0]
         out = []
-        for v in vals:
+        for v in arr:
             e = v*k + e*(1-k)
             out.append(e)
         return out
-
-    macd_line = [a-b for a,b in zip(ema(data, fast), ema(data, slow))]
+    macd_line = [a-b for a,b in zip(ema(vals, fast), ema(vals, slow))]
     sig_line  = ema(macd_line, signal)
     hist      = [m-s for m,s in zip(macd_line, sig_line)]
     return macd_line, sig_line, hist
 
-# === ENTRY SIGNAL LOGIC ===
+# === ENTRY SIGNAL (with debug) ===
 def check_entry():
     try:
         h1  = get_ohlcv_safe(SYMBOL, '1h')
@@ -93,12 +92,14 @@ def check_entry():
         sd, mu     = stdev(closes1[-20:]), mean(closes1[-20:])
         inside_dev = abs(price-mu) <= 2*sd
 
-       # ส่ง debug สถานะตัวแปรสำคัญไป Telegram
-       telegram(f"[DEBUG] uptrend={uptrend}, price={price:.2f}, poi_low={poi_low:.2f}, cross_up={cross_up}, inside_dev={inside_dev}")
+        # debug
+        dbg = f"[CHK] uptrend={uptrend}, price={price:.2f}, poi_l={poi_l:.2f}, poi_h={poi_h:.2f}, cross_up={cross_up}, cross_down={cross_down}, inside_dev={inside_dev}"
+        print(dbg)
+        telegram(dbg)
 
-        if uptrend and price<=poi_l and cross_up and inside_dev:
+        if uptrend and price <= poi_l and cross_up and inside_dev:
             return "long", price
-        if not uptrend and price>=poi_h and cross_down and inside_dev:
+        if not uptrend and price >= poi_h and cross_down and inside_dev:
             return "short", price
         return None, None
     except Exception as e:
@@ -112,18 +113,18 @@ def set_leverage():
     except Exception as e:
         print("[ERROR] set_leverage:", e)
 
-# === PLACE ORDER & OCO SL/TP ===
-def place_order(direction, price):
+# === PLACE ORDER & OCO ===
+def place_order(direction, entry):
     global capital
-    size = round((capital*LEVERAGE)/price,3)
+    size = round((capital*LEVERAGE)/entry, 3)
     side = 'buy' if direction=='long' else 'sell'
     sl_side = 'sell' if side=='buy' else 'buy'
 
-    sl_price = round(price*(0.99 if direction=='long' else 1.01),2)
-    tp_price = round(price*(1 + 0.01*2) if direction=='long' else price*(1-0.01*2),2)
+    sl_price = round(entry*(0.99 if direction=='long' else 1.01), 2)
+    tp_price = round(entry*(1+0.01*2) if direction=='long' else entry*(1-0.01*2), 2)
 
     okx.create_market_order(SYMBOL, side, size)
-    telegram(f"[ENTRY] {direction.upper()} @ {price:.2f}  TP:{tp_price:.2f} SL:{sl_price:.2f}")
+    telegram(f"[ENTRY] {direction.upper()} @ {entry:.2f} TP:{tp_price:.2f} SL:{sl_price:.2f}")
 
     okx.private_post_trade_order_algo({
         'instId': SYMBOL, 'tdMode':'cross',
@@ -133,7 +134,7 @@ def place_order(direction, price):
         'slTriggerPx': sl_price,   'slOrdPx':'-1'
     })
 
-    return size, price, tp_price, sl_price
+    return size, entry, tp_price, sl_price
 
 # === MAIN LOOP ===
 def main_loop():
@@ -143,32 +144,26 @@ def main_loop():
     set_leverage()
 
     while True:
-    if not position_open:
-        # -- DEBUG print ก่อนเช็คสัญญาณ --
-        print("⏱️ Checking for entry…")  
-        
-        direction, entry = check_entry()
-        
-        # ดูผลลัพธ์ที่ฟังก์ชันคืนมา
-        print(f"   → check_entry returned: {direction}, {entry}")
-        if direction:
-            telegram(f"[DEBUG] Got entry signal: {direction} @ {entry}")
-        
-        …
+        print("⏱️ Loop tick", time.strftime("%H:%M:%S"))
+        if not position_open:
+            print("  ➤ Checking entry…")
+            direction, entry = check_entry()
+            print("  ➤ check_entry returned:", direction, entry)
             if direction:
+                telegram(f"[DEBUG] Got entry signal: {direction} @ {entry:.2f}")
                 size, entry, tp, sl = place_order(direction, entry)
                 position_open = True
 
                 while True:
                     try:
-                        ticker = okx.fetch_ticker(SYMBOL)
-                        price = ticker.get('last')
+                        tick = okx.fetch_ticker(SYMBOL)
+                        price = tick.get('last')
                         if price is None:
                             raise Exception("no 'last' in ticker")
 
-                        # Move SL → BE
+                        # MOVE SL → BE
                         be_price = entry*(1+0.0001) if direction=='long' else entry*(1-0.0001)
-                        if direction=='long' and price>= entry + (tp-entry)*BE_TRIGGER_RATIO:
+                        if direction=='long' and price >= entry + (tp-entry)*BE_TRIGGER_RATIO:
                             okx.private_post_trade_order_algo({
                                 'instId':SYMBOL,'tdMode':'cross',
                                 'side':'sell','ordType':'reduce_only',
@@ -176,7 +171,7 @@ def main_loop():
                             })
                             telegram(f"[BE] SL→BE @ {be_price:.2f}")
                             sl = be_price
-                        if direction=='short' and price<= entry - (entry-tp)*BE_TRIGGER_RATIO:
+                        if direction=='short' and price <= entry - (entry-tp)*BE_TRIGGER_RATIO:
                             okx.private_post_trade_order_algo({
                                 'instId':SYMBOL,'tdMode':'cross',
                                 'side':'buy','ordType':'reduce_only',
@@ -186,22 +181,22 @@ def main_loop():
                             sl = be_price
 
                         # TP hit
-                        if (direction=='long' and price>=tp) or (direction=='short' and price<=tp):
+                        if (direction=='long' and price >= tp) or (direction=='short' and price <= tp):
                             pnl = (tp-entry)*size if direction=='long' else (entry-tp)*size
                             capital += pnl; win_count += 1
                             telegram(f"[TP] +{pnl:.2f} | Capital:{capital:.2f}")
-                            if win_count % WITHDRAW_THRESHOLD==0:
-                                wd=capital/2; capital-=wd
+                            if win_count % WITHDRAW_THRESHOLD == 0:
+                                wd = capital/2; capital -= wd
                                 telegram(f"[WD] Withdraw {wd:.2f} | Remain:{capital:.2f}")
-                            position_open=False
+                            position_open = False
                             break
 
                         # SL hit
-                        if (direction=='long' and price<=sl) or (direction=='short' and price>=sl):
+                        if (direction=='long' and price <= sl) or (direction=='short' and price >= sl):
                             pnl = (entry-sl)*size if direction=='long' else (sl-entry)*size
                             capital -= abs(pnl)
                             telegram(f"[SL] -{abs(pnl):.2f} | Capital:{capital:.2f}")
-                            position_open=False
+                            position_open = False
                             break
 
                     except Exception as e:
@@ -210,6 +205,4 @@ def main_loop():
         time.sleep(10)
 
 if __name__ == "__main__":
-    # test telegram function immediately
-    telegram("🔧 Test Telegram — BOT is up")
     main_loop()
