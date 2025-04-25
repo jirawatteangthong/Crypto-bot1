@@ -224,3 +224,7 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
+# ใส่ไว้ท้ายไฟล์ main.py แล้วรันดู
+if __name__ == "__main__":
+    telegram("ทดสอบ Telegram — ถ้าข้อความนี้มา แสดงว่าฟังก์ชันทำงานปกติ")
+    main_loop()
