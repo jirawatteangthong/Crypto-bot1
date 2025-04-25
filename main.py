@@ -4,24 +4,23 @@ import requests
 from statistics import mean, stdev
 
 # === CONFIG ===
-API_KEY = '0659b6f2-c86a-466a-82ec-f1a52979bc33'
-API_SECRET = 'CCB0A67D53315671F599050FCD712CD1'
-API_PASSPHRASE = 'Jirawat1-'
-
-SYMBOL = 'BTC-USDT-SWAP'
-TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
+API_KEY          = '0659b6f2-c86a-466a-82ec-f1a52979bc33'
+API_SECRET       = 'CCB0A67D53315671F599050FCD712CD1'
+API_PASSPHRASE   = 'Jirawat1-'
+SYMBOL           = 'BTC-USDT-SWAP'
+TELEGRAM_TOKEN   = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
 TELEGRAM_CHAT_ID = '8104629569'
 
-LEVERAGE = 20
-BASE_CAPITAL = 20
-WITHDRAW_THRESHOLD = 3  # ถอนกำไรทุก 3 ไม้
-ORDER_SIZE_PCT = 1.0
+LEVERAGE           = 20
+BASE_CAPITAL       = 20
+WITHDRAW_THRESHOLD = 3    # ถอนทุก 3 ไม้
+BE_TRIGGER_RATIO   = 0.5  # 50% ของทางไป TP
 
-capital = BASE_CAPITAL
-win_count = 0
+capital       = BASE_CAPITAL
+win_count     = 0
 position_open = False
 
-# === OKX API ===
+# === OKX API CLIENT ===
 okx = ccxt.okx({
     'apiKey': API_KEY,
     'secret': API_SECRET,
@@ -30,119 +29,105 @@ okx = ccxt.okx({
     'options': {'defaultType': 'swap'},
 })
 
-# === TELEGRAM NOTIFICATION ===
+# === TELEGRAM FUNCTION WITH DEBUG ===
 def telegram(msg):
     try:
-        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                     params={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-    except:
-        print("[Telegram Error]")
+        print("Sending Telegram:", msg)
+        resp = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            params={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+        )
+        print("Telegram response:", resp.status_code, resp.text)
+    except Exception as e:
+        print("[Telegram Error]", e)
 
-# === SAFELY FETCH OHLCV ===
+# === SAFE OHLCV FETCH ===
 def get_ohlcv_safe(symbol, tf, limit=50, retries=5):
-    for i in range(retries):
+    for _ in range(retries):
         try:
             data = okx.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
             if data and len(data) >= limit:
                 return data
         except Exception as e:
+            print(f"[ERROR] fetch_ohlcv {tf}: {e}")
             time.sleep(1)
-    raise Exception(f"fetch_ohlcv failed: {tf} (after {retries} retries)")
+    raise Exception(f"fetch_ohlcv failed: {tf}")
 
 # === MACD CALCULATION ===
 def calculate_macd(data, fast=12, slow=26, signal=9):
-    def ema(values, period):
-        k = 2 / (period + 1)
-        ema_val = values[0]
-        result = []
-        for price in values:
-            ema_val = price * k + ema_val * (1 - k)
-            result.append(ema_val)
-        return result
-    macd_line = [f - s for f, s in zip(ema(data, fast), ema(data, slow))]
-    signal_line = ema(macd_line, signal)
-    hist = [m - s for m, s in zip(macd_line, signal_line)]
-    return macd_line, signal_line, hist
+    def ema(vals, period):
+        k = 2/(period+1)
+        e = vals[0]
+        out = []
+        for v in vals:
+            e = v*k + e*(1-k)
+            out.append(e)
+        return out
 
-# === GET CURRENT TICKER ===
-def get_ticker(symbol):
-    try:
-        ticker = okx.fetch_ticker(symbol)
-        if ticker and 'last' in ticker:
-            return ticker['last']  # ราคาปัจจุบัน
-        else:
-            raise Exception("ไม่พบข้อมูลราคาจาก API")
-    except Exception as e:
-        telegram(f"[ERROR] fetch_ticker failed: {str(e)}")
-        return None
+    macd_line = [a-b for a,b in zip(ema(data, fast), ema(data, slow))]
+    sig_line  = ema(macd_line, signal)
+    hist      = [m-s for m,s in zip(macd_line, sig_line)]
+    return macd_line, sig_line, hist
 
-# === CHECK ENTRY CONDITIONS ===
+# === ENTRY SIGNAL LOGIC ===
 def check_entry():
     try:
-        h1 = get_ohlcv_safe(SYMBOL, '1h')
+        h1  = get_ohlcv_safe(SYMBOL, '1h')
         m15 = get_ohlcv_safe(SYMBOL, '15m')
-        m1 = get_ohlcv_safe(SYMBOL, '1m')
+        m1  = get_ohlcv_safe(SYMBOL, '1m')
 
-        h1_close = [x[4] for x in h1]
-        trend_up_h1 = h1_close[-1] > h1_close[-2] > h1_close[-3]  # H1 trend check (Uptrend)
+        closes_h1 = [x[4] for x in h1]
+        uptrend   = closes_h1[-1] > closes_h1[-2] > closes_h1[-3]
 
-        m15_highs = [x[2] for x in m15[-5:]]
-        m15_lows = [x[3] for x in m15[-5:]]
-        poi_high = max(m15_highs)
-        poi_low = min(m15_lows)
+        highs15 = [x[2] for x in m15[-5:]]
+        lows15  = [x[3] for x in m15[-5:]]
+        poi_h   = max(highs15)
+        poi_l   = min(lows15)
 
-        m1_close = [x[4] for x in m1]
-        macd, signal, hist = calculate_macd(m1_close)
-        cross_up = macd[-2] < signal[-2] and macd[-1] > signal[-1]  # MACD cross-up
-        cross_down = macd[-2] > signal[-2] and macd[-1] < signal[-1]  # MACD cross-down
-        price = m1_close[-1]
-        price_sd = stdev(m1_close[-20:])
-        price_mean = mean(m1_close[-20:])
-        inside_deviation = abs(price - price_mean) <= 2 * price_sd
+        closes1 = [x[4] for x in m1]
+        macd, sig, _ = calculate_macd(closes1)
+        cross_up   = macd[-2]<sig[-2] and macd[-1]>sig[-1]
+        cross_down = macd[-2]>sig[-2] and macd[-1]<sig[-1]
 
-        # ตรวจสอบกรณีเทรนด์ขาขึ้น (Uptrend) และเข้าออเดอร์ Buy
-        if trend_up_h1 and price <= poi_low and cross_up and inside_deviation:
+        price      = closes1[-1]
+        sd, mu     = stdev(closes1[-20:]), mean(closes1[-20:])
+        inside_dev = abs(price-mu) <= 2*sd
+
+        if uptrend and price<=poi_l and cross_up and inside_dev:
             return "long", price
-        # ตรวจสอบกรณีเทรนด์ขาลง (Downtrend) และเข้าออเดอร์ Short
-        elif not trend_up_h1 and price >= poi_high and cross_down and inside_deviation:
+        if not uptrend and price>=poi_h and cross_down and inside_dev:
             return "short", price
-        
         return None, None
     except Exception as e:
-        telegram(f"[ERROR] Strategy check failed: {str(e)}")
+        telegram(f"[ERROR] Strategy failed: {e}")
         return None, None
 
 # === SET LEVERAGE ===
-def set_leverage(symbol, leverage):
+def set_leverage():
     try:
-        okx.set_leverage(leverage, symbol, {'marginMode': 'cross'})
-    except:
-        pass
+        okx.set_leverage(LEVERAGE, SYMBOL, {'marginMode':'cross'})
+    except Exception as e:
+        print("[ERROR] set_leverage:", e)
 
-# === PLACE ORDER ===
-def place_order(direction, price, capital):
-    # คำนวณขนาดออเดอร์
-    size = round((capital * LEVERAGE) / price, 3)
-    side = 'buy' if direction == "long" else 'sell'
-    sl_side = 'sell' if side == 'buy' else 'buy'
-    sl_price = round(price * (0.99 if direction == "long" else 1.01), 2)
-    tp_price = round(price * (1 + 0.01 * 2) if direction == "long" else price * (1 - 0.01 * 2), 2)
+# === PLACE ORDER & OCO SL/TP ===
+def place_order(direction, price):
+    global capital
+    size = round((capital*LEVERAGE)/price,3)
+    side = 'buy' if direction=='long' else 'sell'
+    sl_side = 'sell' if side=='buy' else 'buy'
 
-    # เปิดออเดอร์
-    order = okx.create_market_order(SYMBOL, side, size)
-    telegram(f"[ENTRY] {direction.upper()} @ {price}\nSize: {size}\nTP: {tp_price}\nSL: {sl_price}")
+    sl_price = round(price*(0.99 if direction=='long' else 1.01),2)
+    tp_price = round(price*(1 + 0.01*2) if direction=='long' else price*(1-0.01*2),2)
 
-    # เปิดคำสั่ง OCO
+    okx.create_market_order(SYMBOL, side, size)
+    telegram(f"[ENTRY] {direction.upper()} @ {price:.2f}  TP:{tp_price:.2f} SL:{sl_price:.2f}")
+
     okx.private_post_trade_order_algo({
-        'instId': SYMBOL,
-        'tdMode': 'cross',
-        'side': sl_side,
-        'ordType': 'oco',
+        'instId': SYMBOL, 'tdMode':'cross',
+        'side': sl_side, 'ordType':'oco',
         'sz': size,
-        'tpTriggerPx': tp_price,
-        'tpOrdPx': '-1',
-        'slTriggerPx': sl_price,
-        'slOrdPx': '-1'
+        'tpTriggerPx': tp_price, 'tpOrdPx':'-1',
+        'slTriggerPx': sl_price,   'slOrdPx':'-1'
     })
 
     return size, price, tp_price, sl_price
@@ -151,80 +136,67 @@ def place_order(direction, price, capital):
 def main_loop():
     global position_open, capital, win_count
 
-    telegram("ไอทิด_บอททำงานแล้วนะ💰")
-    set_leverage(SYMBOL, LEVERAGE)
+    telegram("🚀 BOT STARTED")
+    set_leverage()
 
     while True:
         if not position_open:
-            direction, price = check_entry()
+            direction, entry = check_entry()
             if direction:
-                size, entry, tp, sl = place_order(direction, price, capital)
+                size, entry, tp, sl = place_order(direction, entry)
                 position_open = True
 
-                # ====== ภายในลูปเช็กราคา หลังจากเปิดออเดอร์แล้ว ======
-   while True:
-    try:
-        ticker = okx.fetch_ticker(SYMBOL)
-        current_price = ticker['last']
+                while True:
+                    try:
+                        ticker = okx.fetch_ticker(SYMBOL)
+                        price = ticker.get('last')
+                        if price is None:
+                            raise Exception("no 'last' in ticker")
 
-        # --- MOVE SL TO BE ---
-        # เมื่อกำไรวิ่งถึง BE_TRIGGER_RATIO ของทางไป TP
-        # current_order มี keys: entry, sl, tp, side, size
-        entry = current_order["entry"]
-        sl    = current_order["sl"]
-        tp    = current_order["tp"]
-        side  = current_order["side"]
-        size  = current_order["size"]
+                        # Move SL → BE
+                        be_price = entry*(1+0.0001) if direction=='long' else entry*(1-0.0001)
+                        if direction=='long' and price>= entry + (tp-entry)*BE_TRIGGER_RATIO:
+                            okx.private_post_trade_order_algo({
+                                'instId':SYMBOL,'tdMode':'cross',
+                                'side':'sell','ordType':'reduce_only',
+                                'sz':size,'slTriggerPx':round(be_price,2),'slOrdPx':'-1'
+                            })
+                            telegram(f"[BE] SL→BE @ {be_price:.2f}")
+                            sl = be_price
+                        if direction=='short' and price<= entry - (entry-tp)*BE_TRIGGER_RATIO:
+                            okx.private_post_trade_order_algo({
+                                'instId':SYMBOL,'tdMode':'cross',
+                                'side':'buy','ordType':'reduce_only',
+                                'sz':size,'slTriggerPx':round(be_price,2),'slOrdPx':'-1'
+                            })
+                            telegram(f"[BE] SL→BE @ {be_price:.2f}")
+                            sl = be_price
 
-        # คำนวณจุด BE (entry ± เล็กน้อย เพื่อกันติด SL)
-        be_price = entry * (1 + 0.0001) if side=="long" else entry * (1 - 0.0001)
+                        # TP hit
+                        if (direction=='long' and price>=tp) or (direction=='short' and price<=tp):
+                            pnl = (tp-entry)*size if direction=='long' else (entry-tp)*size
+                            capital += pnl; win_count += 1
+                            telegram(f"[TP] +{pnl:.2f} | Capital:{capital:.2f}")
+                            if win_count % WITHDRAW_THRESHOLD==0:
+                                wd=capital/2; capital-=wd
+                                telegram(f"[WD] Withdraw {wd:.2f} | Remain:{capital:.2f}")
+                            position_open=False
+                            break
 
-        # เงื่อนไขขยับ SL ไป BE
-        if side=="long" and current_price >= entry + (tp-entry)*BE_TRIGGER_RATIO:
-            # เรียก OCO API เพื่อปรับ SL เป็น BE
-            okx.private_post_trade_order_algo({
-                'instId': SYMBOL,
-                'tdMode': 'cross',
-                'side': 'sell',
-                'ordType': 'reduce_only',
-                'sz': size,
-                'slTriggerPx': round(be_price, 2),
-                'slOrdPx': '-1'
-            })
-            telegram(f"[BE] Move SL to BE: {be_price:.2f}")
-            # กำหนด sl ใหม่ใน current_order เพื่อไม่ให้ทำซ้ำ
-            current_order["sl"] = be_price
+                        # SL hit
+                        if (direction=='long' and price<=sl) or (direction=='short' and price>=sl):
+                            pnl = (entry-sl)*size if direction=='long' else (sl-entry)*size
+                            capital -= abs(pnl)
+                            telegram(f"[SL] -{abs(pnl):.2f} | Capital:{capital:.2f}")
+                            position_open=False
+                            break
 
-        elif side=="short" and current_price <= entry - (entry-tp)*BE_TRIGGER_RATIO:
-            okx.private_post_trade_order_algo({
-                'instId': SYMBOL,
-                'tdMode': 'cross',
-                'side': 'buy',
-                'ordType': 'reduce_only',
-                'sz': size,
-                'slTriggerPx': round(be_price, 2),
-                'slOrdPx': '-1'
-            })
-            telegram(f"[BE] Move SL to BE: {be_price:.2f}")
-            current_order["sl"] = be_price
-
-        # --- ตรวจ TP/SL ปกติ ---
-        if (side == 'long' and current_price >= tp) or (side == 'short' and current_price <= tp):
-            # TP logic...
-            break
-
-        if (side == 'long' and current_price <= sl) or (side == 'short' and current_price >= sl):
-            # SL logic...
-            break
-
-    except Exception as e:
-        telegram(f"[ERROR] Price check failed: {e}")
-    time.sleep(5)
+                    except Exception as e:
+                        telegram(f"[ERROR] Price loop: {e}")
+                    time.sleep(5)
         time.sleep(10)
 
 if __name__ == "__main__":
-    main_loop()
-# ใส่ไว้ท้ายไฟล์ main.py แล้วรันดู
-if __name__ == "__main__":
-    telegram("ทดสอบ Telegram — ถ้าข้อความนี้มา แสดงว่าฟังก์ชันทำงานปกติ")
+    # test telegram function immediately
+    telegram("🔧 Test Telegram — BOT is up")
     main_loop()
