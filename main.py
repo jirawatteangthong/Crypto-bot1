@@ -29,15 +29,17 @@ okx = ccxt.okx({
     'options': {'defaultType': 'swap'},
 })
 
-# === TELEGRAM (with debug) ===
+# === TELEGRAM (only ENTRY/TP/SL/WD) ===
 def telegram(msg):
     try:
+        # print to console for all messages
         print("→ Telegram:", msg)
-        r = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            params={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
-        )
-        print("  status:", r.status_code, "resp:", r.text)
+        # only send important prefixes
+        if msg.startswith(("[ENTRY]", "[TP]", "[SL]", "[WD]")):
+            requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                params={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+            )
     except Exception as e:
         print("[Telegram Error]", e)
 
@@ -68,7 +70,7 @@ def calculate_macd(vals, fast=12, slow=26, signal=9):
     hist      = [m-s for m,s in zip(macd_line, sig_line)]
     return macd_line, sig_line, hist
 
-# === ENTRY SIGNAL (with debug) ===
+# === ENTRY SIGNAL ===
 def check_entry():
     try:
         h1  = get_ohlcv_safe(SYMBOL, '1h')
@@ -92,18 +94,14 @@ def check_entry():
         sd, mu     = stdev(closes1[-20:]), mean(closes1[-20:])
         inside_dev = abs(price-mu) <= 2*sd
 
-        # debug
-        dbg = f"[CHK] uptrend={uptrend}, price={price:.2f}, poi_l={poi_l:.2f}, poi_h={poi_h:.2f}, cross_up={cross_up}, cross_down={cross_down}, inside_dev={inside_dev}"
-        print(dbg)
-        telegram(dbg)
-
+        # only check uptrend & price <= poi_l & MACD cross-up
         if uptrend and price <= poi_l and cross_up and inside_dev:
             return "long", price
         if not uptrend and price >= poi_h and cross_down and inside_dev:
             return "short", price
         return None, None
     except Exception as e:
-        telegram(f"[ERROR] Strategy failed: {e}")
+        print("[ERROR] Strategy failed:", e)
         return None, None
 
 # === SET LEVERAGE ===
@@ -121,7 +119,7 @@ def place_order(direction, entry):
     sl_side = 'sell' if side=='buy' else 'buy'
 
     sl_price = round(entry*(0.99 if direction=='long' else 1.01), 2)
-    tp_price = round(entry*(1+0.01*2) if direction=='long' else entry*(1-0.01*2), 2)
+    tp_price = round(entry*(1 + 0.01*2) if direction=='long' else entry*(1 - 0.01*2), 2)
 
     okx.create_market_order(SYMBOL, side, size)
     telegram(f"[ENTRY] {direction.upper()} @ {entry:.2f} TP:{tp_price:.2f} SL:{sl_price:.2f}")
@@ -144,13 +142,9 @@ def main_loop():
     set_leverage()
 
     while True:
-        print("⏱️ Loop tick", time.strftime("%H:%M:%S"))
         if not position_open:
-            print("  ➤ Checking entry…")
             direction, entry = check_entry()
-            print("  ➤ check_entry returned:", direction, entry)
             if direction:
-                telegram(f"[DEBUG] Got entry signal: {direction} @ {entry:.2f}")
                 size, entry, tp, sl = place_order(direction, entry)
                 position_open = True
 
@@ -200,7 +194,7 @@ def main_loop():
                             break
 
                     except Exception as e:
-                        telegram(f"[ERROR] Price loop: {e}")
+                        print("[ERROR] Price loop:", e)
                     time.sleep(5)
         time.sleep(10)
 
