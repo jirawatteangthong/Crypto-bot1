@@ -98,12 +98,16 @@ def get_trade_signal():
     }
 
 # ====== Main Loop ======
+# ====== Main Loop ======
 try:
-    send_telegram_alert("วัยรุ่น_บอทเริ่มทำงานแล้ว!")
+    send_telegram_alert("✅ บอทเริ่มทำงานแล้ว พร้อมเทรดจริง!")
+
+    # สร้างอ็อบเจ็กต์ okx สำหรับการเรียกใช้ฟังก์ชันจาก OKXClient
+    okx = OKXClient()
 
     while True:
         if current_order:
-            status = okx.check_order_status(current_order["order_id"])
+            status = okx.check_order_status(current_order["order_id"])  # ใช้ okx ที่สร้างขึ้น
             if status["data"][0]["state"] == "filled":
                 result = okx.calculate_pnl(current_order)
                 pnl = result["pnl"]
