@@ -98,7 +98,6 @@ def get_trade_signal():
     }
 
 # ====== Main Loop ======
-# ====== Main Loop ======
 try:
     send_telegram_alert("✅ บอทเริ่มทำงานแล้ว พร้อมเทรดจริง!")
 
@@ -107,27 +106,34 @@ try:
 
     while True:
         if current_order:
-            status = okx.check_order_status(current_order["order_id"])  # ใช้ okx ที่สร้างขึ้น
-            if status["data"][0]["state"] == "filled":
-                result = okx.calculate_pnl(current_order)
-                pnl = result["pnl"]
-                capital += pnl
+            status = okx.check_order_status(current_order["order_id"])
 
-                msg = f'ปิดออเดอร์แล้ว\\nผลลัพธ์: {"กำไร" if pnl > 0 else "ขาดทุน"} {pnl:.2f} USDT\\nทุนปัจจุบัน: {capital:.2f} USDT'
-                send_telegram_alert(msg)
+            # ตรวจสอบว่า 'data' มีอยู่ใน status และไม่เป็น None
+            if "data" in status and status["data"]:
+                order_status = status["data"][0]["state"]
+                
+                if order_status == "filled":
+                    result = okx.calculate_pnl(current_order)
+                    pnl = result["pnl"]
+                    capital += pnl
 
-                if pnl > 0:
-                    tp_streak += 1
-                    if tp_streak >= 3:
-                        withdraw_amt = capital / 2
-                        capital -= withdraw_amt
-                        send_telegram_alert(f"🏦 TP ติดกัน 3 ครั้ง!\\nพิจารณาถอนกำไร: {withdraw_amt:.2f} USDT")
+                    msg = f'ปิดออเดอร์แล้ว\\nผลลัพธ์: {"กำไร" if pnl > 0 else "ขาดทุน"} {pnl:.2f} USDT\\nทุนปัจจุบัน: {capital:.2f} USDT'
+                    send_telegram_alert(msg)
+
+                    if pnl > 0:
+                        tp_streak += 1
+                        if tp_streak >= 3:
+                            withdraw_amt = capital / 2
+                            capital -= withdraw_amt
+                            send_telegram_alert(f"🏦 TP ติดกัน 3 ครั้ง!\\nพิจารณาถอนกำไร: {withdraw_amt:.2f} USDT")
+                            tp_streak = 0
+                    else:
                         tp_streak = 0
-                else:
-                    tp_streak = 0
 
-                current_order = None
-
+                    current_order = None
+            else:
+                send_telegram_alert("⚠️ ข้อผิดพลาดในการดึงข้อมูลสถานะคำสั่ง!")
+                
         if not current_order:
             signal = get_trade_signal()
             if signal:
