@@ -1,89 +1,162 @@
 import time
+import hmac
+import hashlib
+import json
 import requests
-import okx.Account_api as AccountAPI
-import okx.Funding_api as FundingAPI
-import okx.Market_api as MarketAPI
-import okx.Trade_api as TradeAPI
-import okx.Order_api as OrderAPI
 
-# ตั้งค่า API ของ OKX
-API_KEY = "0659b6f2-c86a-466a-82ec-f1a52979bc33"
-API_SECRET = "CCB0A67D53315671F599050FCD712CD1"
-PASSPHRASE = "Jirawat1-"
-okx_account = AccountAPI.AccountAPI(API_KEY, API_SECRET, PASSPHRASE)
-okx_trade = TradeAPI.TradeAPI(API_KEY, API_SECRET, PASSPHRASE)
-okx_market = MarketAPI.MarketAPI(API_KEY, API_SECRET, PASSPHRASE)
+# ====== OKX API Configuration ======
+OKX_API_KEY = "0659b6f2-c86a-466a-82ec-f1a52979bc33"
+OKX_API_SECRET = "CCB0A67D53315671F599050FCD712CD1"
+OKX_API_PASSPHRASE = "Jirawat1-"
 
-# กำหนดจุด OB สำหรับ Buy และ Sell
-order_block_low = 20000  # จุดต่ำสุดของ OB
-order_block_high = 20500  # จุดสูงสุดของ OB
+# ====== Trading Settings ======
+SYMBOL = "BTC-USDT-SWAP"
+START_CAPITAL = 20
+LEVERAGE = 10
+TP_RATIO = 2.0               # TP = 2 เท่าของความเสี่ยง
+SL_BUFFER = 0.0015           # เผื่อ SL 0.15%
+BE_TRIGGER_RATIO = 0.5       # ขยับ SL ไป BE เมื่อได้กำไร 50% ของ TP
 
-# ระบุสีของ OB
-order_block_color = "blue"  # สีฟ้าหมายถึง Buy, สีแดงหมายถึง Sell
+# ====== Telegram Configuration ======
+TELEGRAM_TOKEN = "7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY"
+TELEGRAM_CHAT_ID = "8104629569"
 
-# คำนวณ TP และ SL
-sl_offset = 10  # ค่าต่ำกว่าหรือสูงกว่าจุด OB
-tp_offset = 20  # ค่าสูงกว่าหรือต่ำกว่าจุด OB
+capital = START_CAPITAL
+tp_streak = 0
+current_order = None
 
-sl = order_block_low - sl_offset if order_block_color == "blue" else order_block_high + sl_offset  # SL
-tp = order_block_high + tp_offset if order_block_color == "blue" else order_block_low - tp_offset  # TP
+# ====== OKX API Client ======
+class OKXClient:
+    def __init__(self):
+        self.api_key = OKX_API_KEY
+        self.secret_key = OKX_API_SECRET
+        self.passphrase = OKX_API_PASSPHRASE
 
-# ฟังก์ชั่นเช็คราคาเข้าซื้อ/ขาย
-def check_entry(price, order_block_low, order_block_high, order_block_color):
-    if price <= order_block_high and price >= order_block_low:
-        if order_block_color == "blue":  # Buy
-            print(f"Buy Order: ราคาเข้าซื้อที่: {price}, SL: {sl}, TP: {tp}")
-            return "buy"
-        elif order_block_color == "red":  # Sell
-            print(f"Sell Order: ราคาเข้าขายที่: {price}, SL: {sl}, TP: {tp}")
-            return "sell"
-    return None
+    def _generate_signature(self, method, endpoint, params):
+        timestamp = str(time.time())
+        body = json.dumps(params) if params else ''
+        message = timestamp + method.upper() + endpoint + body
+        signature = hmac.new(self.secret_key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+        return signature, timestamp
 
-# ฟังก์ชั่นเปิดออเดอร์จริง
-def place_order(side, size, price, sl, tp):
-    if side == "buy":
-        order = okx_trade.create_order(instId="BTC-USDT", tdMode="cross", side="buy", ordType="market", sz=str(size))
-    elif side == "sell":
-        order = okx_trade.create_order(instId="BTC-USDT", tdMode="cross", side="sell", ordType="market", sz=str(size))
-    # ตั้งค่า SL และ TP
-    okx_trade.set_stop_loss_take_profit(instId="BTC-USDT", side=side, price=str(price), sl=sl, tp=tp)
-    print(f"Order placed: {side} at {price}")
-    return order
+    def place_order(self, symbol, side, entry_price, sl, tp, size):
+        url = f"https://www.okx.com/api/v5/trade/order"
+        params = {
+            "instId": symbol,
+            "tdMode": "cross",
+            "side": side,
+            "ordType": "limit",
+            "px": entry_price,
+            "sz": size,
+            "sl": sl,
+            "tp": tp
+        }
+        signature, timestamp = self._generate_signature("POST", "/api/v5/trade/order", params)
+        headers = {
+            "OK-API-API-KEY": self.api_key,
+            "OK-API-PASSPHRASE": self.passphrase,
+            "OK-API-TIMESTAMP": timestamp,
+            "OK-API-SIGN": signature
+        }
+        response = requests.post(url, json=params, headers=headers)
+        return response.json()
 
-# ฟังก์ชั่นเช็คราคาและการเปิดออเดอร์
-def trade_logic():
-    # สมมุติราคา (ราคาปัจจุบันของ BTC)
-    current_price = 20100  # คุณสามารถดึงราคาจริงจาก OKX API ได้
+    def check_order_status(self, order_id):
+        url = f"https://www.okx.com/api/v5/trade/order/{order_id}"
+        signature, timestamp = self._generate_signature("GET", f"/api/v5/trade/order/{order_id}", None)
+        headers = {
+            "OK-API-API-KEY": self.api_key,
+            "OK-API-PASSPHRASE": self.passphrase,
+            "OK-API-TIMESTAMP": timestamp,
+            "OK-API-SIGN": signature
+        }
+        response = requests.get(url, headers=headers)
+        return response.json()
 
-    # ตรวจสอบว่าราคาเข้าโซน OB หรือไม่
-    side = check_entry(current_price, order_block_low, order_block_high, order_block_color)
-    if side:
-        # เปิดออเดอร์
-        size = 0.01  # ขนาดออเดอร์ (ใช้ตามที่เหมาะสมกับทุนของคุณ)
-        place_order(side, size, current_price, sl, tp)
+    def calculate_pnl(self, order):
+        # พิจารณากำไรขาดทุนจากออเดอร์
+        return {"pnl": 10}  # ตัวอย่างการคำนวณกำไร
 
-# ฟังก์ชั่นแจ้งเตือนทาง Telegram
+# ====== Telegram Alert ======
 def send_telegram_alert(message):
-    telegram_url = "https://api.telegram.org/bot7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY/sendMessage"
-    chat_id = "8104629569"
-    params = {"chat_id": chat_id, "text": message}
-    requests.get(telegram_url, params=params)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+    response = requests.post(url, data=payload)
+    return response.json()
 
-# ฟังก์ชั่นรันบอท
-def main():
+# ====== Strategy — Signal Generator ======
+def get_trade_signal():
+    # วิเคราะห์สัญญาณการเทรด (ตัวอย่าง)
+    return {
+        "side": "long",
+        "entry": 50000,
+        "sl": 49000,
+        "tp": 52000
+    }
+
+# ====== Main Loop ======
+try:
+    send_telegram_alert("วัยรุ่น_บอทเริ่มทำงานแล้ว!")
+
     while True:
-        try:
-            # รัน logic การเทรดทุกๆ 5 วินาที
-            trade_logic()
+        if current_order:
+            status = okx.check_order_status(current_order["order_id"])
+            if status["data"][0]["state"] == "filled":
+                result = okx.calculate_pnl(current_order)
+                pnl = result["pnl"]
+                capital += pnl
 
-            # แจ้งเตือนเมื่อมีการเปิด/ปิดออเดอร์
-            send_telegram_alert("เปิดออเดอร์แล้ว: Buy หรือ Sell")
+                msg = f'ปิดออเดอร์แล้ว\\nผลลัพธ์: {"กำไร" if pnl > 0 else "ขาดทุน"} {pnl:.2f} USDT\\nทุนปัจจุบัน: {capital:.2f} USDT'
+                send_telegram_alert(msg)
 
-            # รอ 5 วินาที
-            time.sleep(5)
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาด: {e}")
-            time.sleep(5)
+                if pnl > 0:
+                    tp_streak += 1
+                    if tp_streak >= 3:
+                        withdraw_amt = capital / 2
+                        capital -= withdraw_amt
+                        send_telegram_alert(f"🏦 TP ติดกัน 3 ครั้ง!\\nพิจารณาถอนกำไร: {withdraw_amt:.2f} USDT")
+                        tp_streak = 0
+                else:
+                    tp_streak = 0
 
-if __name__ == "__main__":
-    main()
+                current_order = None
+
+        if not current_order:
+            signal = get_trade_signal()
+            if signal:
+                entry = signal["entry"]
+                sl = signal["sl"] * (1 - SL_BUFFER if signal["side"] == "long" else 1 + SL_BUFFER)
+                tp = entry + ((entry - sl) * TP_RATIO if signal["side"] == "long" else -((sl - entry) * TP_RATIO))
+                position_size = (capital * LEVERAGE) / entry
+
+                order = okx.place_order(
+                    symbol=SYMBOL,
+                    side=signal["side"],
+                    entry_price=entry,
+                    sl=sl,
+                    tp=tp,
+                    size=position_size
+                )
+
+                current_order = {
+                    "order_id": order["data"]["ordId"],
+                    "entry": entry,
+                    "sl": sl,
+                    "tp": tp,
+                    "side": signal["side"],
+                    "size": position_size
+                }
+
+                send_telegram_alert(
+                    f"เปิดออเดอร์ใหม่: {signal['side'].upper()}\\nEntry: {entry:.2f}\\nSL: {sl:.2f}\\nTP: {tp:.2f}\\nขนาด: {position_size:.4f} BTC"
+                )
+
+        time.sleep(20)
+
+except KeyboardInterrupt:
+    send_telegram_alert("⛔️ หยุดบอทด้วยมือ")
+except Exception as e:
+    send_telegram_alert(f"⚠️ บอทผิดพลาด: {str(e)}")
