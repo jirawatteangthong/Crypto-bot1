@@ -151,7 +151,7 @@ def place_order(direction, price, capital):
 def main_loop():
     global position_open, capital, win_count
 
-    telegram("บอทพี่ทำงานแล้ว")
+    telegram("ไอทิด_บอททำงานแล้วนะ💰")
     set_leverage(SYMBOL, LEVERAGE)
 
     while True:
@@ -161,33 +161,65 @@ def main_loop():
                 size, entry, tp, sl = place_order(direction, price, capital)
                 position_open = True
 
-                while True:
-                    try:
-                        ticker = okx.fetch_ticker(SYMBOL)
-                        current_price = ticker['last']
-                        if (direction == 'long' and current_price >= tp) or (direction == 'short' and current_price <= tp):
-                            profit = (tp - entry) * size if direction == "long" else (entry - tp) * size
-                            capital += profit
-                            win_count += 1
-                            telegram(f"[TP HIT] {direction.upper()} +{round(profit, 2)} USDT | Capital: {round(capital,2)}")
+                # ====== ภายในลูปเช็กราคา หลังจากเปิดออเดอร์แล้ว ======
+while True:
+    try:
+        ticker = okx.fetch_ticker(SYMBOL)
+        current_price = ticker['last']
 
-                            if win_count % WITHDRAW_THRESHOLD == 0:
-                                withdraw_amount = capital / 2
-                                capital -= withdraw_amount
-                                telegram(f"[WITHDRAW] ถอนกำไรออก {round(withdraw_amount,2)} เหรียญ | เหลือ: {round(capital,2)}")
+        # --- MOVE SL TO BE ---
+        # เมื่อกำไรวิ่งถึง BE_TRIGGER_RATIO ของทางไป TP
+        # current_order มี keys: entry, sl, tp, side, size
+        entry = current_order["entry"]
+        sl    = current_order["sl"]
+        tp    = current_order["tp"]
+        side  = current_order["side"]
+        size  = current_order["size"]
 
-                            position_open = False
-                            break
+        # คำนวณจุด BE (entry ± เล็กน้อย เพื่อกันติด SL)
+        be_price = entry * (1 + 0.0001) if side=="long" else entry * (1 - 0.0001)
 
-                        elif (direction == 'long' and current_price <= sl) or (direction == 'short' and current_price >= sl):
-                            loss = (entry - sl) * size if direction == "long" else (sl - entry) * size
-                            capital -= abs(loss)
-                            telegram(f"[SL HIT] {direction.upper()} -{round(abs(loss), 2)} USDT | Capital: {round(capital,2)}")
-                            position_open = False
-                            break
-                    except Exception as e:
-                        telegram(f"[ERROR] Price check failed: {e}")
-                    time.sleep(5)
+        # เงื่อนไขขยับ SL ไป BE
+        if side=="long" and current_price >= entry + (tp-entry)*BE_TRIGGER_RATIO:
+            # เรียก OCO API เพื่อปรับ SL เป็น BE
+            okx.private_post_trade_order_algo({
+                'instId': SYMBOL,
+                'tdMode': 'cross',
+                'side': 'sell',
+                'ordType': 'reduce_only',
+                'sz': size,
+                'slTriggerPx': round(be_price, 2),
+                'slOrdPx': '-1'
+            })
+            telegram(f"[BE] Move SL to BE: {be_price:.2f}")
+            # กำหนด sl ใหม่ใน current_order เพื่อไม่ให้ทำซ้ำ
+            current_order["sl"] = be_price
+
+        elif side=="short" and current_price <= entry - (entry-tp)*BE_TRIGGER_RATIO:
+            okx.private_post_trade_order_algo({
+                'instId': SYMBOL,
+                'tdMode': 'cross',
+                'side': 'buy',
+                'ordType': 'reduce_only',
+                'sz': size,
+                'slTriggerPx': round(be_price, 2),
+                'slOrdPx': '-1'
+            })
+            telegram(f"[BE] Move SL to BE: {be_price:.2f}")
+            current_order["sl"] = be_price
+
+        # --- ตรวจ TP/SL ปกติ ---
+        if (side == 'long' and current_price >= tp) or (side == 'short' and current_price <= tp):
+            # TP logic...
+            break
+
+        if (side == 'long' and current_price <= sl) or (side == 'short' and current_price >= sl):
+            # SL logic...
+            break
+
+    except Exception as e:
+        telegram(f"[ERROR] Price check failed: {e}")
+    time.sleep(5)
         time.sleep(10)
 
 if __name__ == "__main__":
