@@ -93,6 +93,9 @@ def check_entry():
         sd, mu     = stdev(closes1[-20:]), mean(closes1[-20:])
         inside_dev = abs(price-mu) <= 2*sd
 
+       # ส่ง debug สถานะตัวแปรสำคัญไป Telegram
+       telegram(f"[DEBUG] uptrend={uptrend}, price={price:.2f}, poi_low={poi_low:.2f}, cross_up={cross_up}, inside_dev={inside_dev}")
+
         if uptrend and price<=poi_l and cross_up and inside_dev:
             return "long", price
         if not uptrend and price>=poi_h and cross_down and inside_dev:
@@ -140,8 +143,18 @@ def main_loop():
     set_leverage()
 
     while True:
-        if not position_open:
-            direction, entry = check_entry()
+    if not position_open:
+        # -- DEBUG print ก่อนเช็คสัญญาณ --
+        print("⏱️ Checking for entry…")  
+        
+        direction, entry = check_entry()
+        
+        # ดูผลลัพธ์ที่ฟังก์ชันคืนมา
+        print(f"   → check_entry returned: {direction}, {entry}")
+        if direction:
+            telegram(f"[DEBUG] Got entry signal: {direction} @ {entry}")
+        
+        …
             if direction:
                 size, entry, tp, sl = place_order(direction, entry)
                 position_open = True
