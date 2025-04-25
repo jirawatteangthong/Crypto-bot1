@@ -162,7 +162,7 @@ def main_loop():
                 position_open = True
 
                 # ====== ภายในลูปเช็กราคา หลังจากเปิดออเดอร์แล้ว ======
-while True:
+   while True:
     try:
         ticker = okx.fetch_ticker(SYMBOL)
         current_price = ticker['last']
