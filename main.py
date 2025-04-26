@@ -159,21 +159,27 @@ while True:
 
         # เช็กจำนวนไม้ที่เทรดไปในวันนี้
         if trade_count < config.DAILY_MAX_TRADES:
-            # เงื่อนไขของกลยุทธ์คุณ เช่น TF, EMA, SMC ฯลฯ
-            should_open_trade = check_strategy_conditions()
+            # เช็กจุดเข้าเทรด
+            direction, price = check_entry()
 
-            if should_open_trade:
-                open_position()  # สมมุติว่าเป็นฟังก์ชันเปิดออเดอร์จริง
+            if direction is not None and not position_open:
+                place_order(direction, price)
                 trade_count += 1
 
                 # ส่งข้อความแจ้งเตือน Telegram ว่าเปิดออเดอร์
-                send_telegram_message(f"เปิดออเดอร์ใหม่! วันนี้เทรดไปแล้ว {trade_count} ไม้")
+                send_telegram(f"[INFO] เปิดออเดอร์ใหม่! วันนี้เทรดไปแล้ว {trade_count} ไม้")
         else:
             print("[INFO] วันนี้ครบจำนวนไม้ที่กำหนดแล้ว")
+
+        # ติดตามสถานะออเดอร์
+        monitor_position()
+
+        # สรุปรายวัน
+        daily_summary()
 
         time.sleep(config.CHECK_INTERVAL)
 
     except Exception as e:
         print(f"[ERROR] {e}")
-        send_telegram_message(f"[ERROR] เกิดข้อผิดพลาด: {e}")
+        send_telegram(f"[ERROR] เกิดข้อผิดพลาด: {e}")
         time.sleep(10)
