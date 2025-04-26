@@ -5,6 +5,11 @@ import time
 import datetime
 from config import *
 from telegram import Bot
+import config
+
+# ตัวแปรสำหรับจำกัดจำนวนเทรดต่อวัน
+trade_count = 0
+last_trade_date = None
 
 # Connect to OKX
 exchange = ccxt.okx({
@@ -143,25 +148,32 @@ def daily_summary():
         # === MAIN LOOP ===
 while True:
     try:
-        now = datetime.datetime.utcnow().date()
+        now = datetime.datetime.utcnow()
+        today = now.date()
 
-        if today != now:
-            today = now
+        # ถ้าเปลี่ยนวัน รีเซ็ต trade_count
+        if last_trade_date != today:
             trade_count = 0
+            last_trade_date = today
+            print("[INFO] เริ่มวันใหม่ รีเซ็ตจำนวนไม้เทรดแล้ว")
 
-        if not position_open and trade_count < DAILY_MAX_TRADES:
-            direction, price = check_entry()
-            if direction:
-                place_order(direction, price)
+        # เช็กจำนวนไม้ที่เทรดไปในวันนี้
+        if trade_count < config.DAILY_MAX_TRADES:
+            # เงื่อนไขของกลยุทธ์คุณ เช่น TF, EMA, SMC ฯลฯ
+            should_open_trade = check_strategy_conditions()
+
+            if should_open_trade:
+                open_position()  # สมมุติว่าเป็นฟังก์ชันเปิดออเดอร์จริง
                 trade_count += 1
 
-        if position_open:
-            monitor_position()
+                # ส่งข้อความแจ้งเตือน Telegram ว่าเปิดออเดอร์
+                send_telegram_message(f"เปิดออเดอร์ใหม่! วันนี้เทรดไปแล้ว {trade_count} ไม้")
+        else:
+            print("[INFO] วันนี้ครบจำนวนไม้ที่กำหนดแล้ว")
 
-        daily_summary()
-
-        time.sleep(20)
+        time.sleep(config.CHECK_INTERVAL)
 
     except Exception as e:
-        send_telegram(f"[ERROR] {str(e)}")
-        time.sleep(60)
+        print(f"[ERROR] {e}")
+        send_telegram_message(f"[ERROR] เกิดข้อผิดพลาด: {e}")
+        time.sleep(10)
