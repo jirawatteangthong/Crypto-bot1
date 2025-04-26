@@ -1,217 +1,167 @@
-# main.py
+# === main.py ===
 import ccxt
-import time
 import requests
-import csv
-from statistics import mean, stdev
-from datetime import datetime, timezone
+import time
+import datetime
+from config import *
+from telegram import Bot
 
-# === CONFIG ===
-API_KEY = '0659b6f2-c86a-466a-82ec-f1a52979bc33'
-API_SECRET = 'CCB0A67D53315671F599050FCD712CD1'
-API_PASSPHRASE = 'Jirawat1-'
-
-SYMBOL = 'BTC-USDT-SWAP'
-LEVERAGE = 20
-BASE_CAPITAL = 20
-WITHDRAW_THRESHOLD = 3
-
-TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
-TELEGRAM_CHAT_ID = '8104629569'
-
-# === STATE ===
-capital = BASE_CAPITAL
-win_count = 0
-loss_count = 0
-position_open = False
-
-# daily summary state
-daily_win = 0
-daily_loss = 0
-daily_pnl = 0.0
-last_summary_date = datetime.now(timezone.utc).date()
-
-# === EXCHANGE & TELEGRAM ===
-okx = ccxt.okx({
+# Connect to OKX
+exchange = ccxt.okx({
     'apiKey': API_KEY,
     'secret': API_SECRET,
     'password': API_PASSPHRASE,
     'enableRateLimit': True,
-    'options': {'defaultType': 'swap'},
+    'options': {'defaultType': 'swap'}
 })
 
-def telegram(msg):
-    try:
-        r = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            params={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-        print("[Telegram]", r.status_code, r.text)
-    except Exception as e:
-        print("[Telegram Error]", e)
+# Telegram Bot
+bot = Bot(token=TELEGRAM_TOKEN)
 
-# === UTILITIES ===
-def get_ohlcv_safe(symbol, tf, limit=50, retries=5):
-    for _ in range(retries):
-        try:
-            data = okx.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
-            if data and len(data) >= limit:
-                return data
-        except:
-            time.sleep(1)
-    raise Exception(f"fetch_ohlcv failed: {tf}")
+# ตัวแปรสำหรับนับจำนวนไม้
+daily_trade_count = 0
+total_trades = 0
 
+# โหลด EMA สำหรับเทรนด์
+def fetch_ema():
+    bars = exchange.fetch_ohlcv(SYMBOL, timeframe=EMA_TF, limit=EMA_PERIOD + 1)
+    closes = [bar[4] for bar in bars]
+    ema = sum(closes[-EMA_PERIOD:]) / EMA_PERIOD
+    return ema
+
+# ดึงราคาปัจจุบัน
+def fetch_price():
+    ticker = exchange.fetch_ticker(SYMBOL)
+    return ticker['last']
+
+# ส่งข้อความไป Telegram
+def send_telegram(message):
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    # === STRATEGY CONFIG ===
+EMA_TF = '1h'       # ใช้ H1 ดูเทรนด์หลัก
+EMA_PERIOD = 50     # EMA 50
+ENTRY_TF = '15m'    # ใช้ M15 เข้าจุด
+MICRO_TF = '1m'     # ใช้ M1 Confirm
+
+LEVERAGE = 15
+START_CAPITAL = 20
+DAILY_MAX_TRADES = 1
+
+# ตัวแปรทุน
+capital = START_CAPITAL
+position_open = False
+today = datetime.datetime.utcnow().date()
+
+# === MACD CALCULATION ===
 def calculate_macd(data, fast=12, slow=26, signal=9):
-    def ema(vals, per):
-        k = 2/(per+1); e = vals[0]; out = []
-        for v in vals:
-            e = v*k + e*(1-k)
-            out.append(e)
-        return out
-    macd_line = [f-s for f,s in zip(ema(data, fast), ema(data, slow))]
-    sig_line = ema(macd_line, signal)
-    hist = [m-s for m,s in zip(macd_line, sig_line)]
-    return macd_line, sig_line, hist
-
-def set_leverage():
-    try:
-        okx.set_leverage(LEVERAGE, SYMBOL, {'marginMode':'cross'})
-    except:
-        pass
-
-# === ENTRY LOGIC ===
+    def ema(values, period):
+        k = 2 / (period + 1)
+        ema_val = values[0]
+        result = []
+        for price in values:
+            ema_val = price * k + ema_val * (1 - k)
+            result.append(ema_val)
+        return result
+    macd_line = [f - s for f, s in zip(ema(data, fast), ema(data, slow))]
+    signal_line = ema(macd_line, signal)
+    hist = [m - s for m, s in zip(macd_line, signal_line)]
+    return macd_line, signal_line, hist
+    # === CHECK ENTRY ===
 def check_entry():
-    # trend on M30
-    m30 = get_ohlcv_safe(SYMBOL, '30m')
-    m30_close = [c[4] for c in m30]
-    trend_up = m30_close[-1] > m30_close[-2] > m30_close[-3]
+    ema_now = fetch_ema()
+    bars_entry = exchange.fetch_ohlcv(SYMBOL, timeframe=ENTRY_TF, limit=50)
+    closes_entry = [bar[4] for bar in bars_entry]
 
-    # swing on M15
-    m15 = get_ohlcv_safe(SYMBOL, '15m')
-    highs = [c[2] for c in m15[-10:]]; lows = [c[3] for c in m15[-10:]]
-    swing_high, swing_low = max(highs), min(lows)
+    bars_micro = exchange.fetch_ohlcv(SYMBOL, timeframe=MICRO_TF, limit=50)
+    closes_micro = [bar[4] for bar in bars_micro]
 
-    # MACD on M1
-    m1 = get_ohlcv_safe(SYMBOL, '1m')
-    closes = [c[4] for c in m1]
-    macd, sig, _ = calculate_macd(closes)
-    cross_up = macd[-2]<sig[-2] and macd[-1]>sig[-1]
-    cross_dn = macd[-2]>sig[-2] and macd[-1]<sig[-1]
-    price = closes[-1]
+    current_price = fetch_price()
 
-    if trend_up and cross_up and price <= swing_low:
-        return "long", price, swing_low, swing_high
-    if not trend_up and cross_dn and price >= swing_high:
-        return "short", price, swing_low, swing_high
-    return None, None, None, None
+    trend_up = current_price > ema_now
 
-# === ORDER & OCO ===
-def place_order(direction, entry, sl, tp):
-    size = round((capital * LEVERAGE) / entry, 3)
-    side = 'buy' if direction=='long' else 'sell'
-    sl_side = 'sell' if side=='buy' else 'buy'
-    # market entry
-    okx.create_market_order(SYMBOL, side, size)
-    telegram(f"[ENTRY] {direction}@{entry} SL:{sl} TP:{tp} Size:{size}")
-    # OCO
-    okx.private_post_trade_order_algo({
-        'instId':SYMBOL,'tdMode':'cross',
-        'side': sl_side,'ordType':'oco','sz':size,
-        'tpTriggerPx': tp,'tpOrdPx':'-1',
-        'slTriggerPx': sl,'slOrdPx':'-1'
+    macd, signal, hist = calculate_macd(closes_micro)
+
+    cross_up = macd[-2] < signal[-2] and macd[-1] > signal[-1]
+    cross_down = macd[-2] > signal[-2] and macd[-1] < signal[-1]
+
+    if trend_up and cross_up:
+        return "long", current_price
+    elif not trend_up and cross_down:
+        return "short", current_price
+    else:
+        return None, None
+        # === PLACE ORDER ===
+def place_order(direction, price):
+    global capital, position_open
+
+    size = round((capital * LEVERAGE) / price, 3)
+    side = 'buy' if direction == "long" else 'sell'
+    sl_side = 'sell' if side == 'buy' else 'buy'
+
+    sl_price = round(price * (0.995 if direction == "long" else 1.005), 2)
+    tp_price = round(price * (1.01 if direction == "long" else 0.99), 2)
+
+    # Place Market Order
+    exchange.create_market_order(SYMBOL, side, size)
+    
+    # Place OCO TP/SL
+    exchange.private_post_trade_order_algo({
+        'instId': SYMBOL,
+        'tdMode': 'cross',
+        'side': sl_side,
+        'ordType': 'oco',
+        'sz': size,
+        'tpTriggerPx': tp_price,
+        'tpOrdPx': '-1',
+        'slTriggerPx': sl_price,
+        'slOrdPx': '-1'
     })
-    return size
 
-# === DAILY SUMMARY ===
-def try_daily_summary():
-    global last_summary_date, daily_win, daily_loss, daily_pnl
-    today = datetime.now(timezone.utc).date()
-    if today != last_summary_date:
-        # send summary for last_summary_date
-        msg = (
-            f"[สรุปรายวัน {last_summary_date}]\n"
-            f"Win: {daily_win} | Loss: {daily_loss}\n"
-            f"Net PnL: {round(daily_pnl,2)} USDT\n"
-            f"Capital: {round(capital,2)} USDT"
-        )
-        telegram(msg)
-        # reset counters
-        daily_win = daily_loss = 0
-        daily_pnl = 0.0
-        last_summary_date = today
+    position_open = True
+    send_telegram(f"[ENTRY] {direction.upper()} @ {price}\nSize: {size}\nTP: {tp_price}\nSL: {sl_price}")
+    # === MONITOR POSITION ===
+def monitor_position():
+    global capital, position_open
 
-# === MAIN LOOP ===
-def main_loop():
-    global position_open, capital, win_count, loss_count, daily_win, daily_loss, daily_pnl
+    orders = exchange.fetch_orders(SYMBOL, limit=5)
+    for order in orders:
+        if order['status'] == 'closed':
+            profit = order['info'].get('pnl', 0)
+            capital += float(profit)
 
-    telegram("บอทพี่ทำงานแล้ว")
-    set_leverage()
+            result = "WIN" if float(profit) > 0 else "LOSS"
+            send_telegram(f"[CLOSE] {result} | PnL: {profit:.2f} USDT\nNew Capital: {capital:.2f} USDT")
 
-    sl_moved = False
-    entry = sl = tp = size = None
-    direction = None
+            position_open = False
+            break
+            # === DAILY SUMMARY ===
+def daily_summary():
+    now = datetime.datetime.utcnow()
+    if now.hour == 23 and now.minute >= 50:  # ส่งตอนเที่ยงคืน UTC ใกล้ ๆ
+        balance = capital
+        send_telegram(f"[DAILY REPORT]\nCapital: {balance:.2f} USDT\nDate: {now.strftime('%Y-%m-%d')}")
+        # === MAIN LOOP ===
+while True:
+    try:
+        now = datetime.datetime.utcnow().date()
 
-    while True:
-        try:
-            try_daily_summary()
+        if today != now:
+            today = now
+            trade_count = 0
 
-            if not position_open:
-                direction, entry, swing_low, swing_high = check_entry()
-                if direction:
-                    # define SL/TP from swings
-                    if direction=='long':
-                        sl = swing_low
-                        tp = entry + (entry - swing_low)
-                    else:
-                        sl = swing_high
-                        tp = entry - (swing_high - entry)
-                    size = place_order(direction, entry, sl, tp)
-                    position_open = True
-                    sl_moved = False
+        if not position_open and trade_count < DAILY_MAX_TRADES:
+            direction, price = check_entry()
+            if direction:
+                place_order(direction, price)
+                trade_count += 1
 
-            else:
-                ticker = okx.fetch_ticker(SYMBOL)
-                price = ticker['last']
+        if position_open:
+            monitor_position()
 
-                # move SL to breakeven at half TP
-                half_tp = (entry+tp)/2 if direction=='long' else (entry+tp)/2
-                if not sl_moved and ((direction=='long' and price>=half_tp) or (direction=='short' and price<=half_tp)):
-                    # cancel existing OCO
-                    okx.cancel_all_orders(SYMBOL)
-                    # new OCO breakeven
-                    sl_breakeven = entry
-                    okx.private_post_trade_order_algo({
-                        'instId':SYMBOL,'tdMode':'cross',
-                        'side': 'sell' if direction=='long' else 'buy',
-                        'ordType':'oco','sz':size,
-                        'tpTriggerPx': tp,'tpOrdPx':'-1',
-                        'slTriggerPx': sl_breakeven,'slOrdPx':'-1'
-                    })
-                    telegram(f"[SL MOVE] Breakeven @ {entry}")
-                    sl_moved = True
+        daily_summary()
 
-                # check TP / SL hit
-                if (direction=='long' and price>=tp) or (direction=='short' and price<=tp):
-                    profit = (tp-entry)*size if direction=='long' else (entry-tp)*size
-                    capital += profit; win_count += 1; daily_win += 1; daily_pnl += profit
-                    telegram(f"[TP HIT] +{round(profit,2)} USDT | Capital: {round(capital,2)}")
-                    position_open = False
+        time.sleep(20)
 
-                    # withdraw every N wins
-                    if win_count % WITHDRAW_THRESHOLD == 0:
-                        w = capital/2; capital -= w
-                        telegram(f"[WITHDRAW] {round(w,2)} USDT | Remain: {round(capital,2)}")
-
-                elif (direction=='long' and price<=sl) or (direction=='short' and price>=sl):
-                    loss = (entry-sl)*size if direction=='long' else (sl-entry)*size
-                    capital -= abs(loss); loss_count +=1; daily_loss+=1; daily_pnl -= abs(loss)
-                    telegram(f"[SL HIT] -{round(abs(loss),2)} USDT | Capital: {round(capital,2)}")
-                    position_open = False
-
-        except Exception as e:
-            telegram(f"[ERROR] {e}")
-
-        time.sleep(5)
-
-
-if __name__ == '__main__':
-    main_loop()
+    except Exception as e:
+        send_telegram(f"[ERROR] {str(e)}")
+        time.sleep(60)
