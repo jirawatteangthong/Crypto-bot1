@@ -29,3 +29,11 @@ ENTRY_TF = '1m'   # ใช้ M1 หา Entry ที่แม่นยำ
 
 # Risk Settings
 RISK_PER_TRADE_PCT = 0.03  # เสี่ยงต่อไม้แค่ 3%
+
+# config.py
+BOT_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
+CHAT_ID = '8104629569'
+
+DAILY_MAX_TRADES = 1  # เทรดได้ 1 ไม้ต่อวัน
+CHECK_INTERVAL = 60   # เช็กสัญญาณทุกๆ 60 วินาที
+
