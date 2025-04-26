@@ -1,13 +1,15 @@
-# === main.py ===
 import ccxt
 import requests
 import time
 import datetime
 from config import *
 from telegram import Bot
-import config
 
-# ตัวแปรสำหรับจำกัดจำนวนเทรดต่อวัน
+# ตัวแปรทุน
+capital = START_CAPITAL
+position_open = False
+
+# ตัวแปรจำกัดจำนวนไม้ต่อวัน
 trade_count = 0
 last_trade_date = None
 
@@ -23,41 +25,32 @@ exchange = ccxt.okx({
 # Telegram Bot
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ตัวแปรสำหรับนับจำนวนไม้
-daily_trade_count = 0
-total_trades = 0
-
-# โหลด EMA สำหรับเทรนด์
-def fetch_ema():
-    bars = exchange.fetch_ohlcv(SYMBOL, timeframe=EMA_TF, limit=EMA_PERIOD + 1)
-    closes = [bar[4] for bar in bars]
-    ema = sum(closes[-EMA_PERIOD:]) / EMA_PERIOD
-    return ema
-
-# ดึงราคาปัจจุบัน
-def fetch_price():
-    ticker = exchange.fetch_ticker(SYMBOL)
-    return ticker['last']
-
-# ส่งข้อความไป Telegram
-def send_telegram(message):
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    # === STRATEGY CONFIG ===
-EMA_TF = '1h'       # ใช้ H1 ดูเทรนด์หลัก
-EMA_PERIOD = 50     # EMA 50
-ENTRY_TF = '15m'    # ใช้ M15 เข้าจุด
-MICRO_TF = '1m'     # ใช้ M1 Confirm
+# === STRATEGY CONFIG ===
+EMA_TF = '1h'       # ดูเทรนด์จาก H1
+EMA_PERIOD = 50     # EMA50
+ENTRY_TF = '15m'    # หาจุดเข้า M15
+MICRO_TF = '1m'     # Confirm จุดเข้า M1
 
 LEVERAGE = 15
 START_CAPITAL = 20
 DAILY_MAX_TRADES = 1
+CHECK_INTERVAL = 30  # วินาที
 
-# ตัวแปรทุน
-capital = START_CAPITAL
-position_open = False
-today = datetime.datetime.utcnow().date()
+# === Functions ===
 
-# === MACD CALCULATION ===
+def fetch_ema():
+    bars = exchange.fetch_ohlcv(SYMBOL, timeframe=EMA_TF, limit=EMA_PERIOD+1)
+    closes = [bar[4] for bar in bars]
+    ema = sum(closes[-EMA_PERIOD:]) / EMA_PERIOD
+    return ema
+
+def fetch_price():
+    ticker = exchange.fetch_ticker(SYMBOL)
+    return ticker['last']
+
+def send_telegram(message):
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
 def calculate_macd(data, fast=12, slow=26, signal=9):
     def ema(values, period):
         k = 2 / (period + 1)
@@ -71,7 +64,7 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     signal_line = ema(macd_line, signal)
     hist = [m - s for m, s in zip(macd_line, signal_line)]
     return macd_line, signal_line, hist
-    # === CHECK ENTRY ===
+
 def check_entry():
     ema_now = fetch_ema()
     bars_entry = exchange.fetch_ohlcv(SYMBOL, timeframe=ENTRY_TF, limit=50)
@@ -95,7 +88,7 @@ def check_entry():
         return "short", current_price
     else:
         return None, None
-        # === PLACE ORDER ===
+
 def place_order(direction, price):
     global capital, position_open
 
@@ -109,7 +102,7 @@ def place_order(direction, price):
     # Place Market Order
     exchange.create_market_order(SYMBOL, side, size)
     
-    # Place OCO TP/SL
+    # Place OCO (Take Profit + Stop Loss)
     exchange.private_post_trade_order_algo({
         'instId': SYMBOL,
         'tdMode': 'cross',
@@ -124,62 +117,53 @@ def place_order(direction, price):
 
     position_open = True
     send_telegram(f"[ENTRY] {direction.upper()} @ {price}\nSize: {size}\nTP: {tp_price}\nSL: {sl_price}")
-    # === MONITOR POSITION ===
+
 def monitor_position():
     global capital, position_open
 
-    orders = exchange.fetch_orders(SYMBOL, limit=5)
+    orders = exchange.fetch_closed_orders(SYMBOL, limit=5)
     for order in orders:
         if order['status'] == 'closed':
-            profit = order['info'].get('pnl', 0)
-            capital += float(profit)
+            profit = float(order['info'].get('pnl', 0))
+            capital += profit
 
-            result = "WIN" if float(profit) > 0 else "LOSS"
+            result = "WIN" if profit > 0 else "LOSS"
             send_telegram(f"[CLOSE] {result} | PnL: {profit:.2f} USDT\nNew Capital: {capital:.2f} USDT")
 
             position_open = False
             break
-            # === DAILY SUMMARY ===
+
 def daily_summary():
     now = datetime.datetime.utcnow()
-    if now.hour == 23 and now.minute >= 50:  # ส่งตอนเที่ยงคืน UTC ใกล้ ๆ
+    if now.hour == 23 and now.minute >= 50:
         balance = capital
         send_telegram(f"[DAILY REPORT]\nCapital: {balance:.2f} USDT\nDate: {now.strftime('%Y-%m-%d')}")
-        # === MAIN LOOP ===
+
+# === MAIN LOOP ===
 while True:
     try:
         now = datetime.datetime.utcnow()
         today = now.date()
 
-        # ถ้าเปลี่ยนวัน รีเซ็ต trade_count
         if last_trade_date != today:
             trade_count = 0
             last_trade_date = today
             print("[INFO] เริ่มวันใหม่ รีเซ็ตจำนวนไม้เทรดแล้ว")
 
-        # เช็กจำนวนไม้ที่เทรดไปในวันนี้
-        if trade_count < config.DAILY_MAX_TRADES:
-            # เช็กจุดเข้าเทรด
-            direction, price = check_entry()
+        if trade_count < DAILY_MAX_TRADES:
+            if not position_open:
+                direction, entry_price = check_entry()
+                if direction:
+                    place_order(direction, entry_price)
+                    trade_count += 1
+            else:
+                monitor_position()
 
-            if direction is not None and not position_open:
-                place_order(direction, price)
-                trade_count += 1
-
-                # ส่งข้อความแจ้งเตือน Telegram ว่าเปิดออเดอร์
-                send_telegram(f"[INFO] เปิดออเดอร์ใหม่! วันนี้เทรดไปแล้ว {trade_count} ไม้")
-        else:
-            print("[INFO] วันนี้ครบจำนวนไม้ที่กำหนดแล้ว")
-
-        # ติดตามสถานะออเดอร์
-        monitor_position()
-
-        # สรุปรายวัน
         daily_summary()
 
-        time.sleep(config.CHECK_INTERVAL)
+        time.sleep(CHECK_INTERVAL)
 
     except Exception as e:
         print(f"[ERROR] {e}")
-        send_telegram(f"[ERROR] เกิดข้อผิดพลาด: {e}")
+        send_telegram(f"[ERROR] {e}")
         time.sleep(10)
