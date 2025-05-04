@@ -1,10 +1,8 @@
 import ccxt
-import time
-import datetime
+import time, datetime
 from config import *
 from telegram import Bot
 
-# --- INIT ---
 exchange = ccxt.okx({
     'apiKey': API_KEY,
     'secret': API_SECRET,
@@ -12,150 +10,129 @@ exchange = ccxt.okx({
     'enableRateLimit': True,
     'options': {'defaultType': 'swap'}
 })
+
 bot = Bot(token=TELEGRAM_TOKEN)
 
+# ตัวแปรหลัก
+capital = START_CAPITAL
 trade_count = 0
 last_trade_date = None
-capital = START_CAPITAL
 position_open = False
-last_ping_time = None
+entry_price = 0
+tp_price = 0
+sl_price = 0
 win_streak = 0
+last_notify_time = None
 
-def send_telegram(msg):
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-
-# --- INDICATOR CALCULATION ---
-def fetch_ema():
-    candles = exchange.fetch_ohlcv(SYMBOL, timeframe='1h', limit=EMA_PERIOD + 1)
-    closes = [c[4] for c in candles]
-    return sum(closes[-EMA_PERIOD:]) / EMA_PERIOD
-
-def fetch_price():
-    return exchange.fetch_ticker(SYMBOL)['last']
-
-def calculate_macd(closes, fast=12, slow=26, signal=9):
-    def ema(vals, period):
+# === MACD
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    def ema(values, period):
         k = 2 / (period + 1)
+        ema_val = values[0]
         result = []
-        ema_prev = vals[0]
-        for val in vals:
-            ema_now = val * k + ema_prev * (1 - k)
-            result.append(ema_now)
-            ema_prev = ema_now
+        for price in values:
+            ema_val = price * k + ema_val * (1 - k)
+            result.append(ema_val)
         return result
-
-    macd_line = [f - s for f, s in zip(ema(closes, fast), ema(closes, slow))]
+    macd_line = [f - s for f, s in zip(ema(data, fast), ema(data, slow))]
     signal_line = ema(macd_line, signal)
     hist = [m - s for m, s in zip(macd_line, signal_line)]
     return macd_line, signal_line, hist
 
-# --- STRATEGY CHECK ---
+def send_telegram(msg):
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+def get_price():
+    return exchange.fetch_ticker(SYMBOL)['last']
+
+def get_m15_structure():
+    candles = exchange.fetch_ohlcv(SYMBOL, timeframe='15m', limit=50)
+    highs = [c[2] for c in candles]
+    lows = [c[3] for c in candles]
+    return max(highs), min(lows)
+
 def check_entry():
-    ema = fetch_ema()
-    price = fetch_price()
-
-    trend_up = price > ema
-
-    m1_data = exchange.fetch_ohlcv(SYMBOL, '1m', limit=50)
-    closes = [x[4] for x in m1_data]
-    macd, signal, hist = calculate_macd(closes)
-
+    candles = exchange.fetch_ohlcv(SYMBOL, timeframe='1m', limit=50)
+    closes = [c[4] for c in candles]
+    macd, signal, _ = calculate_macd(closes)
     cross_up = macd[-2] < signal[-2] and macd[-1] > signal[-1]
     cross_down = macd[-2] > signal[-2] and macd[-1] < signal[-1]
+    
+    h1_candles = exchange.fetch_ohlcv(SYMBOL, '1h', limit=50)
+    h1_close = h1_candles[-1][4]
+    h1_open = h1_candles[-1][1]
+    trend_up = h1_close > h1_open
 
     if trend_up and cross_up:
-        return "long", price
+        return 'long'
     elif not trend_up and cross_down:
-        return "short", price
-    return None, None
+        return 'short'
+    else:
+        return None
+def place_order(direction):
+    global capital, position_open, entry_price, tp_price, sl_price
 
-# --- ORDER LOGIC ---
-def place_order(direction, entry_price):
-    global capital, position_open
-
+    entry_price = get_price()
     size = round((capital * LEVERAGE) / entry_price, 3)
-    side = 'buy' if direction == "long" else 'sell'
+    side = 'buy' if direction == 'long' else 'sell'
     sl_side = 'sell' if side == 'buy' else 'buy'
-    tp = round(entry_price * (1.01 if direction == 'long' else 0.99), 2)
-    sl = round(entry_price * (0.995 if direction == 'long' else 1.005), 2)
+
+    high, low = get_m15_structure()
+    sl_price = round(low * 0.999 if direction == 'long' else high * 1.001, 2)
+    tp_price = round(entry_price * 1.02 if direction == 'long' else entry_price * 0.98, 2)
 
     exchange.create_market_order(SYMBOL, side, size)
-
-    exchange.private_post_trade_order_algo({
-        'instId': SYMBOL,
-        'tdMode': 'cross',
-        'side': sl_side,
-        'ordType': 'oco',
-        'sz': size,
-        'tpTriggerPx': tp,
-        'tpOrdPx': '-1',
-        'slTriggerPx': sl,
-        'slOrdPx': '-1'
-    })
-
+    send_telegram(f"[ENTRY] {direction.upper()} @ {entry_price}\nTP: {tp_price}, SL: {sl_price}")
     position_open = True
-    send_telegram(f"[ENTRY] {direction.upper()} @ {entry_price}\nTP: {tp} | SL: {sl}\nSize: {size}")
-
-# --- MONITOR PNL ---
-def check_closed_orders():
+def monitor_trade():
     global position_open, capital, trade_count, win_streak
 
-    closed_orders = exchange.fetch_closed_orders(SYMBOL, limit=5)
-    for o in closed_orders:
-        if o['status'] == 'closed' and float(o['info'].get('pnl', 0)) != 0:
-            pnl = float(o['info'].get('pnl', 0))
-            capital += pnl
-            result = "WIN" if pnl > 0 else "LOSS"
-            win_streak = win_streak + 1 if pnl > 0 else 0
-            send_telegram(f"[CLOSE] {result} | PnL: {pnl:.2f} USDT\nCapital: {capital:.2f}")
-            trade_count += 1
+    current_price = get_price()
+    if position_open:
+        profit_zone = abs(current_price - entry_price) >= abs(tp_price - entry_price) * 0.5
+        if profit_zone:
+            sl_price = entry_price
+            send_telegram("[SL MOVE] SL moved to breakeven!")
+
+        if (tp_price and current_price >= tp_price) or (sl_price and current_price <= sl_price):
+            result = "WIN" if current_price >= tp_price else "LOSS"
+            gain = abs(capital * 0.02) if result == "WIN" else -abs(capital * 0.01)
+            capital += gain
             position_open = False
+            win_streak = win_streak + 1 if result == "WIN" else 0
+            trade_count += 1
+            send_telegram(f"[CLOSE] {result} | PnL: {gain:.2f} USDT\nNew Capital: {capital:.2f}")
 
-            # ถอนทุนเมื่อชนะครบ 3 ไม้ติด
             if win_streak >= 3:
-                withdraw_profit = capital * 0.5
-                capital -= withdraw_profit
-                send_telegram(f"[WITHDRAW] กำไรสะสมครบ 3 ไม้ติด\nถอนทุน: {withdraw_profit:.2f} USDT\nทุนใหม่: {capital:.2f}")
+                withdraw_profit()
                 win_streak = 0
-            break
+def withdraw_profit():
+    send_telegram("[WITHDRAW] Bot withdraws partial profit.")
 
-# --- PING EVERY 5 HOURS ---
-def ping_status():
-    global last_ping_time
+def heartbeat():
+    global last_notify_time
     now = datetime.datetime.utcnow()
-    if not last_ping_time or (now - last_ping_time).seconds >= 18000:
-        send_telegram(f"[PING] Bot is running... Capital: {capital:.2f} USDT\n{now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-        last_ping_time = now
+    if not last_notify_time or (now - last_notify_time).total_seconds() > 18000:
+        send_telegram("[STATUS] Bot is alive.")
+        last_notify_time = now
 
-# --- DAILY SUMMARY ---
-def daily_summary():
-    now = datetime.datetime.utcnow()
-    if now.hour == 23 and now.minute >= 55:
-        send_telegram(f"[DAILY SUMMARY] Capital: {capital:.2f} USDT\nDate: {now.strftime('%Y-%m-%d')}")
+send_telegram("[START] Bot started.")
 
-# --- MAIN LOOP ---
-send_telegram("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
 while True:
     try:
-        now = datetime.datetime.utcnow()
-        today = now.date()
-        ping_status()
-
-        if last_trade_date != today:
+        now = datetime.datetime.utcnow().date()
+        if last_trade_date != now:
             trade_count = 0
-            last_trade_date = today
+            last_trade_date = now
 
         if not position_open and trade_count < DAILY_MAX_TRADES:
-            direction, price = check_entry()
-            if direction:
-                place_order(direction, price)
+            signal = check_entry()
+            if signal:
+                place_order(signal)
 
-        if position_open:
-            check_closed_orders()
-
-        daily_summary()
-        time.sleep(60)
+        monitor_trade()
+        heartbeat()
+        time.sleep(CHECK_INTERVAL)
 
     except Exception as e:
-        send_telegram(f"[ERROR] {e}")
-        time.sleep(30)
+        send_telegram(f"[ERROR] {str(e)}")
+        time.sleep(10)
