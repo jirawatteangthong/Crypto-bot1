@@ -138,7 +138,7 @@ def monitor_position(entry_price, tp_price, size):
             break
 
 # === Main Loop ===
-send_telegram("[BOT START] เริ่มทำงานแล้ว")
+send_telegram_message("บอทเริ่มทำงานแล้ว [TEST MESSAGE]")
 
 entry_price = None
 tp_price = None
