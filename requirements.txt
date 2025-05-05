@@ -1,5 +1,2 @@
 ccxt
 requests
-schedule
-pandas
-python-dotenv
