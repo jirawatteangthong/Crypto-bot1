@@ -6,10 +6,10 @@ TELEGRAM_TOKEN = '7752789264:AAF-0zdgHsSSYe7PS17ePYThOFP3k7AjxBY'
 TELEGRAM_CHAT_ID = '8104629569'
 
 SYMBOL = "BTC-USDT-SWAP"
-START_CAPITAL = 45
-LEVERAGE = 20
+START_CAPITAL = 20
+LEVERAGE = 15
 DAILY_MAX_TRADES = 2
-H1_LIMIT = 100  # จำนวนแท่งเทียน H1 ที่ใช้ดู swing
+H1_LIMIT = 70  # จำนวนแท่งเทียน H1 ที่ใช้ดู swing
 FIBO_ZONE = (0.618, 0.786)  # ระดับ Fibo zone
 
 CHECK_INTERVAL = 60  # วินาทีที่ใช้รัน loop ตรวจสอบทุกครั้ง
