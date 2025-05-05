@@ -10,18 +10,25 @@ exchange = ccxt.okx({
     'options': {'defaultType': 'swap'}
 })
 
+def calculate_order_size(entry_price, sl_price, capital, leverage):
+    risk = capital * 0.99  # ใช้เกือบทั้งหมด
+    sl_distance = abs(entry_price - sl_price)
+    size = round((risk * leverage) / sl_distance, 3)
+    return size
+
 def open_trade(signal, capital):
-    direction, price = signal['direction'], signal['price']
-    size = round((capital * LEVERAGE) / price, 3)
-    side = 'buy' if direction == 'long' else 'sell'
+    direction, price = signal
 
     sl_price = round(signal['ob']['low'] * (1 - SL_BUFFER), 2) if direction == 'long' else round(signal['ob']['high'] * (1 + SL_BUFFER), 2)
     tp_price = round(price + (price - sl_price) * TP_RATIO, 2) if direction == 'long' else round(price - (sl_price - price) * TP_RATIO, 2)
+    
+    side = 'buy' if direction == 'long' else 'sell'
+    size = calculate_order_size(price, sl_price, capital, LEVERAGE)
 
-    # Place Market Order
+    # เปิดออเดอร์
     exchange.create_market_order(SYMBOL, side, size)
 
-    # Place OCO (TP/SL)
+    # ตั้ง OCO สำหรับ TP/SL
     exchange.private_post_trade_order_algo({
         'instId': SYMBOL,
         'tdMode': 'cross',
