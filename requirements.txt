@@ -1,2 +1,5 @@
-ccxt==4.2.11
-python-telegram-bot==13.15
+ccxt
+requests
+schedule
+pandas
+python-dotenv
