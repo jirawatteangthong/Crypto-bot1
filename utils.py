@@ -1,5 +1,4 @@
-import ccxt
-import datetime
+import ccxt, datetime
 from config import *
 
 exchange = ccxt.okx({
@@ -27,17 +26,16 @@ def calculate_macd(closes, fast=12, slow=26, signal=9):
     hist = [m - s for m, s in zip(macd, signal_line)]
     return macd, signal_line, hist
 
-def detect_order_blocks(candles):
-    # Placeholder: เพิ่ม logic SMC OB จริงตาม swing H1
-    return [{'high': candles[-10][2], 'low': candles[-10][3]}]
-
-def detect_fvg(candles):
-    # Placeholder
-    return []
-
 def detect_bos(candles):
-    # Placeholder
-    return []
+    # แค่ mock BOS ล่าสุด: ใช้แท่งก่อนสุดท้ายเทียบกับก่อนหน้า
+    if len(candles) < 3:
+        return []
+    bos = []
+    if candles[-2][2] > candles[-3][2]:  # High breakout
+        bos.append({'type': 'bullish', 'high': candles[-2][2], 'low': candles[-2][3]})
+    elif candles[-2][3] < candles[-3][3]:  # Low breakdown
+        bos.append({'type': 'bearish', 'high': candles[-2][2], 'low': candles[-2][3]})
+    return bos
 
 def is_new_day(last_date):
     return last_date != datetime.datetime.utcnow().date()
