@@ -25,10 +25,21 @@ def open_trade(signal, capital):
     return capital, "pending", False
 
 def monitor_trade(result, moved_sl, capital):
-    orders = exchange.fetch_closed_orders(SYMBOL)
+    orders = exchange.fetch_closed_orders(SYMBOL, limit=5)
     for o in orders:
-        if o['status'] == 'closed':
-            pnl = float(o['info'].get('pnl', 0))
+        if o['status'] == 'closed' and float(o['amount']) > 0:
+            entry_price = float(o['price']) or float(o['info'].get('fillPx', 0))
+            exit_price = float(o['average']) or float(o['info'].get('avgPx', 0))
+            size = float(o['amount'])
+
+            if entry_price == 0 or exit_price == 0:
+                continue  # ข้ามถ้ายังไม่มีข้อมูลที่ต้องการ
+
+            if o['side'] == 'buy':
+                pnl = (exit_price - entry_price) * size
+            else:
+                pnl = (entry_price - exit_price) * size
+
             result = "WIN" if pnl > 0 else "LOSS"
             capital += pnl
             trade_notify(result=result, pnl=pnl, new_cap=capital)
