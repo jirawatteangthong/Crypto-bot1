@@ -1,9 +1,8 @@
-from utils import fetch_ohlcv, detect_order_blocks, detect_bos, detect_choch, draw_fibonacci
+from utils import fetch_ohlcv, detect_order_blocks, detect_bos, draw_fibonacci
 
 def get_m15_zones():
     candles = fetch_ohlcv('15m')
-    trend = detect_bos(candles)
-    choch = detect_choch(candles)
-    fibo = draw_fibonacci(candles, choch)
+    trend, choch = detect_bos(candles)
+    fibo = draw_fibonacci(candles, trend, choch)
     ob_zones = detect_order_blocks(candles, fibo)
-    return {'fibo': fibo, 'ob': ob_zones, 'trend': trend}
+    return {'ob': ob_zones, 'fibo': fibo}, trend
