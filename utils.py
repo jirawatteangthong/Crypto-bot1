@@ -1,6 +1,6 @@
 import ccxt
-import datetime
 from config import *
+import datetime
 
 exchange = ccxt.okx({
     'apiKey': API_KEY,
@@ -10,27 +10,34 @@ exchange = ccxt.okx({
     'options': {'defaultType': 'swap'}
 })
 
-def fetch_ohlcv(tf):
+def fetch_ohlcv(tf='15m'):
     return exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=100)
 
-def is_new_day(last_date):
-    return last_date != datetime.datetime.utcnow().date()
-
-def should_health_check(last, hours):
-    return (datetime.datetime.utcnow() - last).total_seconds() >= hours * 3600
+def detect_order_blocks(candles, fibo):
+    obs = []
+    for i in range(-20, -1):
+        low, high = candles[i][3], candles[i][2]
+        if fibo['61.8'] <= low <= fibo['78.6'] or fibo['61.8'] <= high <= fibo['78.6']:
+            obs.append({'low': low, 'high': high})
+    return obs
 
 def detect_bos(candles):
-    return 'long' if candles[-1][4] > candles[-10][4] else 'short'
+    if candles[-1][4] > candles[-5][4]:
+        return 'long', False
+    elif candles[-1][4] < candles[-5][4]:
+        return 'short', False
+    return 'long', True  # default
 
-def detect_choch(candles):
-    return candles[-2][4] < candles[-10][4] if candles[-1][4] > candles[-2][4] else False
-
-def draw_fibonacci(candles, choch):
-    high = max(c[2] for c in candles[-20:])
-    low = min(c[3] for c in candles[-20:])
-    zone = (low + 0.618 * (high - low), low + 0.786 * (high - low))
-    return {'zone_61_78': zone, 'current_price': candles[-1][4]}
-
-def detect_order_blocks(candles, fibo):
-    # Placeholder: fake OB inside fibo zone
-    return [{'high': fibo['zone_61_78'][1], 'low': fibo['zone_61_78'][0]}]
+def draw_fibonacci(candles, trend, choch):
+    if trend == 'long':
+        swing_low = min([c[3] for c in candles[-30:]])
+        swing_high = max([c[2] for c in candles[-30:]])
+    else:
+        swing_high = max([c[2] for c in candles[-30:]])
+        swing_low = min([c[3] for c in candles[-30:]])
+    return {
+        '0.0': swing_high if trend == 'short' else swing_low,
+        '100.0': swing_low if trend == 'short' else swing_high,
+        '61.8': swing_low + 0.618 * (swing_high - swing_low),
+        '78.6': swing_low + 0.786 * (swing_high - swing_low)
+    }
