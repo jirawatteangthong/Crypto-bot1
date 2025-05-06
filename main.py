@@ -1,7 +1,7 @@
 import time, datetime
 from config import *
 from telegram import notify, health_check, trade_notify
-from strategy import get_fibo_zone_from_bos
+from strategy import get_m15_zones
 from entry import check_entry_signal
 from order import open_trade, monitor_trade
 from utils import is_new_day, should_health_check
@@ -26,13 +26,11 @@ while True:
         health_check(capital)
 
     if trade_count < DAILY_MAX_TRADES:
-        fibo_zone = get_fibo_zone_from_bos()
-        zones = {'fibo': fibo_zone}
+        zones = get_m15_zones()
         signal = check_entry_signal(zones)
 
         if signal:
             capital, result, moved_sl = open_trade(signal, capital)
             monitor_trade(result, moved_sl, capital)
             trade_count += 1
-
     time.sleep(CHECK_INTERVAL)
