@@ -1,36 +1,19 @@
-import time, datetime
-from config import *
-from telegram import notify, health_check, trade_notify
 from strategy import get_m15_zones
 from entry import check_entry_signal
 from order import open_trade, monitor_trade
-from utils import is_new_day, should_health_check
+from telegram import health_check
+import time
 
-last_trade_date = None
-trade_count = 0
-last_health_check = datetime.datetime.utcnow()
-capital = START_CAPITAL
-
-notify("BOT STARTED")
+capital = 49.0
+last_health = time.time()
 
 while True:
-    now = datetime.datetime.utcnow()
-
-    if is_new_day(last_trade_date):
-        trade_count = 0
-        last_trade_date = now.date()
-        notify("New day: trade counter reset")
-
-    if should_health_check(last_health_check, HEALTH_CHECK_HOURS):
-        last_health_check = now
+    zones, trend = get_m15_zones()
+    signal = check_entry_signal(zones, trend)
+    if signal:
+        capital, _, _ = open_trade(signal, capital)
+    monitor_trade()
+    if time.time() - last_health >= 3600:
         health_check(capital)
-
-    if trade_count < DAILY_MAX_TRADES:
-        zones = get_m15_zones()
-        signal = check_entry_signal(zones)
-
-        if signal:
-            capital, result, moved_sl = open_trade(signal, capital)
-            monitor_trade(result, moved_sl, capital)
-            trade_count += 1
-    time.sleep(CHECK_INTERVAL)
+        last_health = time.time()
+    time.sleep(30)
