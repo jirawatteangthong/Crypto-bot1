@@ -10,37 +10,47 @@ exchange = ccxt.okx({
     'options': {'defaultType': 'swap'}
 })
 
+latest_order_id = None
+entry_price = None
+
 def open_trade(signal, capital):
+    global latest_order_id, entry_price
     direction, price = signal['direction'], signal['price']
-    size = round((capital * LEVERAGE) / price, 3)
-    size = size if signal['full_size'] else size / 2
+    portion = 1.0 if not signal['ob'].get('partial') else 0.5
+    size = round((capital * LEVERAGE * portion) / price, 3)
     side = 'buy' if direction == 'long' else 'sell'
 
     sl_price = round(signal['ob']['low'] * (1 - SL_BUFFER), 2) if direction == 'long' else round(signal['ob']['high'] * (1 + SL_BUFFER), 2)
     tp_price = round(price + (price - sl_price) * TP_RATIO, 2) if direction == 'long' else round(price - (sl_price - price) * TP_RATIO, 2)
 
-    exchange.create_limit_order(SYMBOL, side, size, price)
+    order = exchange.create_limit_order(SYMBOL, side, size, price)
+    latest_order_id = order['id']
+    entry_price = price
+
+    # TP/SL OCO
+    exchange.private_post_trade_order_algo({
+        'instId': SYMBOL,
+        'tdMode': 'cross',
+        'side': 'sell' if side == 'buy' else 'buy',
+        'ordType': 'oco',
+        'sz': size,
+        'tpTriggerPx': tp_price,
+        'tpOrdPx': '-1',
+        'slTriggerPx': sl_price,
+        'slOrdPx': '-1'
+    })
 
     trade_notify(direction, price, size, tp_price, sl_price)
     return capital, "pending", False
 
-def monitor_trade(result, moved_sl, capital):
-    orders = exchange.fetch_closed_orders(SYMBOL, limit=5)
+def monitor_trade():
+    global latest_order_id, entry_price
+    if not latest_order_id: return
+    orders = exchange.fetch_closed_orders(SYMBOL)
     for o in orders:
-        if o['status'] == 'closed' and float(o['amount']) > 0:
-            entry_price = float(o['price']) or float(o['info'].get('fillPx', 0))
-            exit_price = float(o['average']) or float(o['info'].get('avgPx', 0))
-            size = float(o['amount'])
-
-            if entry_price == 0 or exit_price == 0:
-                continue  # ข้ามถ้ายังไม่มีข้อมูลที่ต้องการ
-
-            if o['side'] == 'buy':
-                pnl = (exit_price - entry_price) * size
-            else:
-                pnl = (entry_price - exit_price) * size
-
+        if o['id'] == latest_order_id and o['status'] == 'closed':
+            close_price = float(o.get('average', entry_price))
+            pnl = (close_price - entry_price) if o['side'] == 'buy' else (entry_price - close_price)
             result = "WIN" if pnl > 0 else "LOSS"
-            capital += pnl
-            trade_notify(result=result, pnl=pnl, new_cap=capital)
-            break
+            trade_notify(result=result, pnl=pnl, new_cap=CAPITAL + pnl)
+            latest_order_id = None
