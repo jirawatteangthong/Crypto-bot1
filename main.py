@@ -26,13 +26,11 @@ while True:
 
         monitor_trade()
 
-        # Health check (1 ชม.)
         if time.time() - last_health >= 3600:
             print("[HEALTH] Sending health check...")
             health_check(capital)
             last_health = time.time()
 
-        # แจ้งเฉพาะทุก 5 ชั่วโมง
         if time.time() - last_5h_check >= 5 * 3600:
             print("[ALERT] 5-hour check")
             notify("[STATUS] BOT STILL RUNNING after 5 hours")
