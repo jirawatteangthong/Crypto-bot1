@@ -10,26 +10,25 @@ capital = START_CAPITAL
 last_health = time.time()
 orders_today = 0
 positions = []
+notify("[BOT STARTED] บอทเริ่มทำงานแล้ว")
 
+notified_wait = False
 notified_no_trade = False
-notified_skip_trade = False
-
-notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
 
 while True:
     try:
         if is_new_day():
             orders_today = 0
             positions = []
+            notified_wait = False
             notified_no_trade = False
-            notified_skip_trade = False
 
         if orders_today < 2:
             fibo, trend_h1, status = get_fibo_zone()
 
-            if status == 'skip' and not notified_skip_trade:
-                notify("[SKIP TRADE] เทรนด์สวนทาง → ข้าม")
-                notified_skip_trade = True
+            if status == 'wait' and not notified_wait:
+                notify("[WAIT] รอ CHoCH จาก M15 หรือ BOS ใหม่จาก H1")
+                notified_wait = True
 
             if fibo:
                 signals = check_entry_signals(fibo, trend_h1)
@@ -40,7 +39,7 @@ while True:
                         capital = open_trade(sig, capital)
                         positions.append(sig)
                         orders_today += 1
-            elif not notified_no_trade:
+            elif not notified_no_trade and status == 'ok':
                 notify("[NO TRADE] ไม่มีสัญญาณเข้าเทรดวันนี้")
                 notified_no_trade = True
 
