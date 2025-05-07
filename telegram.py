@@ -9,9 +9,9 @@ def notify(message):
 
 def trade_notify(direction=None, entry=None, size=None, tp=None, sl=None, result=None, pnl=None, new_cap=None):
     if direction:
-        notify(f"[ENTRY] {direction.upper()} @ {entry:.2f}\nSize: {size}\nTP: {tp:.2f}\nSL: {sl:.2f}")
+        notify(f"[ENTRY] {direction.upper()} @ {entry}\nSize: {size}\nTP: {tp}\nSL: {sl}")
     if result:
         notify(f"[CLOSE] {result} | PnL: {pnl:.2f} USDT\nCapital: {new_cap:.2f}")
 
 def health_check(capital):
-    notify(f"[HEALTH CHECK] BOT STATUS\nCapital: {capital:.2f} USDT")
+    notify(f"[HEALTH CHECK] BOT ALIVE\nCurrent Capital: {capital:.2f} USDT")
