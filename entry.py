@@ -1,18 +1,18 @@
-from utils import fetch_ohlcv
-
 def check_entry_signal(zones, trend):
-    candles = fetch_ohlcv('15m')
-    price = candles[-1][4]
+    price = zones['swing']['close']
+    entry = None
 
     for ob in zones['ob']:
         if ob['low'] <= price <= ob['high']:
-            return {'direction': trend, 'price': price, 'ob': ob}
+            entry = ob
+            break
 
-    fibo_zone = zones['fibo']
-    if fibo_zone['61.8'] <= price <= fibo_zone['78.6']:
-        return {
-            'direction': trend,
-            'price': price,
-            'ob': {'low': fibo_zone['61.8'], 'high': fibo_zone['78.6'], 'partial': True}
-        }
+    if entry:
+        return {'direction': trend, 'price': price, 'ob': entry}
+
+    fibo = zones['fibo']
+    if fibo['low'] <= price <= fibo['high']:
+        fibo_entry = {'high': fibo['high'], 'low': fibo['low']}
+        return {'direction': trend, 'price': price, 'ob': fibo_entry}
+
     return None
