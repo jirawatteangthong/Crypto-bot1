@@ -1,47 +1,33 @@
-import time
-from config import *
-from strategy import get_fibo_zone
-from entry import check_entry_signals
-from order import open_trade, monitor_trades
-from telegram import notify, health_check
-from utils import is_new_day
-
-capital = START_CAPITAL
-last_health = time.time()
-orders_today = 0
-positions = []
-last_signal_sent = None  # ป้องกันแจ้งซ้ำ
-
-notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
+notified_no_trade = False
+notified_skip_trade = False
 
 while True:
     try:
         if is_new_day():
             orders_today = 0
             positions = []
-            last_signal_sent = None  # รีเซ็ตการแจ้งเตือนเมื่อขึ้นวันใหม่
+            notified_no_trade = False
+            notified_skip_trade = False
 
         if orders_today < 2:
             fibo, trend_h1, status = get_fibo_zone()
 
-            if status == "skip" and last_signal_sent != "skip":
-                notify(f"[SKIP TRADE] เทรนด์สวนทาง → ข้าม")
-                last_signal_sent = "skip"
+            if status == 'skip' and not notified_skip_trade:
+                notify("[SKIP TRADE] เทรนด์สวนทาง → ข้าม")
+                notified_skip_trade = True
 
-            elif status == "none" and last_signal_sent != "none":
-                notify("[NO TRADE] ไม่มีสัญญาณเข้าเทรดวันนี้")
-                last_signal_sent = "none"
-
-            elif status == "ok" and fibo:
+            if fibo:
                 signals = check_entry_signals(fibo, trend_h1)
                 for sig in signals:
                     if orders_today >= 2:
                         break
-                    if sig['price'] not in [p['price'] for p in positions]:
+                    if sig['level'] not in [p['level'] for p in positions]:
                         capital = open_trade(sig, capital)
                         positions.append(sig)
                         orders_today += 1
-                last_signal_sent = "ok"
+            elif not notified_no_trade:
+                notify("[NO TRADE] ไม่มีสัญญาณเข้าเทรดวันนี้")
+                notified_no_trade = True
 
         positions, capital = monitor_trades(positions, capital)
 
