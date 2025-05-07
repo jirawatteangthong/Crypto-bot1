@@ -1,6 +1,6 @@
 from strategy import get_m15_zones
 from entry import check_entry_signal
-from order import open_trade, monitor_trade
+from order import open_trade, monitor_trade, has_open_position
 from telegram import health_check, notify
 import time
 
@@ -14,15 +14,18 @@ while True:
     try:
         print("[LOOP] Checking for trade setup...")
 
-        zones, trend = get_m15_zones()
-        print(f"[STRATEGY] Trend: {trend}, Zones: {zones}")
-
-        signal = check_entry_signal(zones, trend)
-        if signal:
-            print(f"[ENTRY SIGNAL] {signal}")
-            capital, _, _ = open_trade(signal, capital)
+        if has_open_position():
+            print("[INFO] Already in position. Skipping new entries.")
         else:
-            print("[ENTRY] No valid signal")
+            zones, trend = get_m15_zones()
+            print(f"[STRATEGY] Trend: {trend}, Zones: {zones}")
+
+            signal = check_entry_signal(zones, trend)
+            if signal:
+                print(f"[ENTRY SIGNAL] {signal}")
+                capital, _, _ = open_trade(signal, capital)
+            else:
+                print("[ENTRY] No valid signal")
 
         monitor_trade()
 
