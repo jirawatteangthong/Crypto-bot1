@@ -1,3 +1,16 @@
+import time
+from config import *
+from strategy import get_fibo_zone
+from entry import check_entry_signals
+from order import open_trade, monitor_trades
+from telegram import notify, health_check
+from utils import is_new_day
+
+capital = START_CAPITAL
+last_health = time.time()
+orders_today = 0
+positions = []
+
 notified_no_trade = False
 notified_skip_trade = False
 
