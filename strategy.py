@@ -1,5 +1,7 @@
 from utils import fetch_ohlcv, detect_bos, detect_choch
 from telegram import notify
+print("CHoCH:", choch)
+print("Trend H1:", trend_h1)
 
 def get_fibo_zone():
     candles_m15 = fetch_ohlcv('15m')[-70:]
