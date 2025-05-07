@@ -1,25 +1,23 @@
 import ccxt
 from config import *
 from telegram import trade_notify
+from utils import exchange
 
-exchange = ccxt.okx({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'password': API_PASSPHRASE,
-    'enableRateLimit': True,
-    'options': {'defaultType': 'swap'}
-})
+current_order_id = None
 
 def open_trade(signal, capital):
+    global current_order_id
     direction, price = signal['direction'], signal['price']
     size = round((capital * LEVERAGE) / price, 3)
     side = 'buy' if direction == 'long' else 'sell'
 
-    sl_price = round(signal['sl'], 2)
-    tp_price = round(signal['tp'], 2)
+    sl_price = round(signal['ob']['low'] * (1 - SL_BUFFER), 2) if direction == 'long' else round(signal['ob']['high'] * (1 + SL_BUFFER), 2)
+    tp_price = round(price + (price - sl_price) * TP_RATIO, 2) if direction == 'long' else round(price - (sl_price - price) * TP_RATIO, 2)
 
-    exchange.create_limit_order(SYMBOL, side, size, price)
+    order = exchange.create_market_order(SYMBOL, side, size)
+    current_order_id = order['id']
 
+    # TP/SL (OCO)
     exchange.private_post_trade_order_algo({
         'instId': SYMBOL,
         'tdMode': 'cross',
@@ -36,12 +34,22 @@ def open_trade(signal, capital):
     return capital, "pending", False
 
 def monitor_trade():
-    # Placeholder: à¸à¸£à¸±à¸ SL à¹à¸¡à¸·à¹à¸­ TP à¸à¸¶à¸ 50%
-    pass
+    global current_order_id
+    if not current_order_id:
+        return
+    orders = exchange.fetch_closed_orders(SYMBOL)
+    for o in orders:
+        if o['id'] == current_order_id and o['status'] == 'closed':
+            pnl = float(o['info'].get('pnl', 0))
+            result = "WIN" if pnl > 0 else "LOSS"
+            new_cap = pnl + START_CAPITAL
+            trade_notify(result=result, pnl=pnl, new_cap=new_cap)
+            current_order_id = None
+            break
 
-def has_open_position():
+def has_any_order():
     positions = exchange.fetch_positions([SYMBOL])
-    for pos in positions:
-        if float(pos['contracts']) > 0:
+    for p in positions:
+        if float(p['contracts']) > 0:
             return True
     return False
