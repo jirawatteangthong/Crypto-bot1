@@ -5,6 +5,8 @@ from entry import check_entries
 from order import open_trade, monitor_trades, reset_daily_counter
 from telegram import health_check
 from utils import is_new_day
+from telegram import notify
+notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
 
 capital = START_CAPITAL
 last_health = time.time()
