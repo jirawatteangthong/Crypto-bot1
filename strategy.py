@@ -8,11 +8,9 @@ def get_fibo_zone():
     trend_h1 = detect_bos(candles_h1)
     choch = detect_choch(candles_m15)
 
-    if not choch:
-        return None, trend_h1
-
-    if choch != trend_h1:
-        notify(f"[SKIP TRADE] เกิด CHoCH ({choch}) แต่เทรนด์ H1 เป็น {trend_h1} → ข้าม")
+    if not choch or choch != trend_h1:
+        if choch and choch != trend_h1:
+            notify(f"[SKIP TRADE] CHoCH: {choch}, H1 Trend: {trend_h1}")
         return None, trend_h1
 
     highs = [c[2] for c in candles_m15]
@@ -21,7 +19,7 @@ def get_fibo_zone():
     swing_low = min(lows)
 
     if choch == 'bullish':
-        fibo = {
+        return {
             'low': swing_low,
             'high': swing_high,
             'levels': {
@@ -31,9 +29,9 @@ def get_fibo_zone():
             'tp': swing_high,
             'sl': swing_low,
             'direction': 'long'
-        }
+        }, trend_h1
     else:
-        fibo = {
+        return {
             'low': swing_low,
             'high': swing_high,
             'levels': {
@@ -43,6 +41,4 @@ def get_fibo_zone():
             'tp': swing_low,
             'sl': swing_high,
             'direction': 'short'
-        }
-
-    return fibo, trend_h1
+        }, trend_h1
