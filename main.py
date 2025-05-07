@@ -10,6 +10,7 @@ capital = START_CAPITAL
 last_health = time.time()
 orders_today = 0
 positions = []
+
 notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
 
 while True:
