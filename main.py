@@ -1,36 +1,45 @@
 import time
 from config import *
 from strategy import get_fibo_zone
-from entry import check_entries
-from order import open_trade, monitor_trades, reset_daily_counter
-from telegram import health_check
+from entry import check_entry_signals
+from order import open_trade, monitor_trades
+from telegram import notify, health_check
 from utils import is_new_day
-from telegram import notify
-notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
 
 capital = START_CAPITAL
 last_health = time.time()
-daily_trades = 0
+orders_today = 0
+positions = []
+notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
 
 while True:
-    if is_new_day():
-        daily_trades = 0
-        reset_daily_counter()
+    try:
+        if is_new_day():
+            orders_today = 0
+            positions = []
 
-    if daily_trades < 2:
-        fibo, trend = get_fibo_zone()
-        if fibo:
-            entries = check_entries(fibo)
-            for signal in entries:
-                capital = open_trade(signal, capital)
-                daily_trades += 1
-                if daily_trades >= 2:
-                    break
+        if orders_today < 2:
+            fibo, trend_h1 = get_fibo_zone()
+            if fibo:
+                signals = check_entry_signals(fibo, trend_h1)
+                for sig in signals:
+                    if orders_today >= 2:
+                        break
+                    if sig['level'] not in [p['level'] for p in positions]:
+                        capital = open_trade(sig, capital)
+                        positions.append(sig)
+                        orders_today += 1
+            else:
+                notify("[NO TRADE] ไม่มีสัญญาณเข้าเทรดวันนี้")
 
-    monitor_trades(capital)
+        positions, capital = monitor_trades(positions, capital)
 
-    if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
-        health_check(capital)
-        last_health = time.time()
+        if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
+            health_check(capital)
+            last_health = time.time()
 
-    time.sleep(CHECK_INTERVAL)
+        time.sleep(CHECK_INTERVAL)
+
+    except Exception as e:
+        notify(f"[ERROR] {str(e)}")
+        time.sleep(60)
