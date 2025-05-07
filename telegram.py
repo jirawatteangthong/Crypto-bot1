@@ -2,10 +2,15 @@ import requests
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
 def notify(message):
-    requests.post(
-        f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
-        json={'chat_id': TELEGRAM_CHAT_ID, 'text': message}
-    )
+    try:
+        r = requests.post(
+            f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
+            json={'chat_id': TELEGRAM_CHAT_ID, 'text': message}
+        )
+        if not r.ok:
+            print(f"[TELEGRAM ERROR] {r.status_code} - {r.text}")
+    except Exception as e:
+        print(f"[TELEGRAM EXCEPTION] {e}")
 
 def trade_notify(direction=None, entry=None, size=None, tp=None, sl=None, result=None, pnl=None, new_cap=None):
     if direction:
