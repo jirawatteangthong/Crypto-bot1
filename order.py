@@ -1,55 +1,44 @@
 import ccxt
 from config import *
 from telegram import trade_notify
-from utils import exchange
 
-current_order_id = None
+exchange = ccxt.okx({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'password': API_PASSPHRASE,
+    'enableRateLimit': True,
+    'options': {'defaultType': 'swap'}
+})
+
+position_open = False
 
 def open_trade(signal, capital):
-    global current_order_id
-    direction, price = signal['direction'], signal['price']
-    size = round((capital * LEVERAGE) / price, 3)
+    global position_open
+    if position_open:
+        return capital, position_open
+
+    direction, price, ob = signal['direction'], signal['price'], signal['ob']
     side = 'buy' if direction == 'long' else 'sell'
+    size = ORDER_SIZE
 
-    sl_price = round(signal['ob']['low'] * (1 - SL_BUFFER), 2) if direction == 'long' else round(signal['ob']['high'] * (1 + SL_BUFFER), 2)
-    tp_price = round(price + (price - sl_price) * TP_RATIO, 2) if direction == 'long' else round(price - (sl_price - price) * TP_RATIO, 2)
+    sl_price = ob['low'] if direction == 'long' else ob['high']
+    tp_price = ob['high'] if direction == 'long' else ob['low']
 
-    order = exchange.create_market_order(SYMBOL, side, size)
-    current_order_id = order['id']
-
-    # TP/SL (OCO)
-    exchange.private_post_trade_order_algo({
-        'instId': SYMBOL,
-        'tdMode': 'cross',
-        'side': 'sell' if side == 'buy' else 'buy',
-        'ordType': 'oco',
-        'sz': size,
-        'tpTriggerPx': tp_price,
-        'tpOrdPx': '-1',
-        'slTriggerPx': sl_price,
-        'slOrdPx': '-1'
-    })
+    exchange.create_limit_order(SYMBOL, side, size, price)
 
     trade_notify(direction, price, size, tp_price, sl_price)
-    return capital, "pending", False
+    position_open = True
+    return capital, position_open
 
-def monitor_trade():
-    global current_order_id
-    if not current_order_id:
-        return
+def monitor_trade(capital):
+    global position_open
     orders = exchange.fetch_closed_orders(SYMBOL)
     for o in orders:
-        if o['id'] == current_order_id and o['status'] == 'closed':
+        if o['status'] == 'closed':
             pnl = float(o['info'].get('pnl', 0))
             result = "WIN" if pnl > 0 else "LOSS"
-            new_cap = pnl + START_CAPITAL
-            trade_notify(result=result, pnl=pnl, new_cap=new_cap)
-            current_order_id = None
+            capital += pnl
+            trade_notify(result=result, pnl=pnl, new_cap=capital)
+            position_open = False
             break
-
-def has_any_order():
-    positions = exchange.fetch_positions([SYMBOL])
-    for p in positions:
-        if float(p['contracts']) > 0:
-            return True
-    return False
+    return position_open
