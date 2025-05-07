@@ -1,9 +1,19 @@
-def check_entry_signal(zones, trend):
-    price = zones['ob'][-1]['price']
-    last_ob = zones['ob'][-1]
+def get_entry_signals(fibo, trend, orders_today):
+    signals = []
 
-    if trend == 'bullish' and last_ob['type'] == 'bullish':
-        return {'direction': 'long', 'price': price, 'ob': last_ob}
-    if trend == 'bearish' and last_ob['type'] == 'bearish':
-        return {'direction': 'short', 'price': price, 'ob': last_ob}
-    return None
+    if orders_today == 0:
+        signals.append({
+            'direction': 'long' if trend == 'bullish' else 'short',
+            'entry_price': fibo['61.8'],
+            'tp': fibo['high'] if trend == 'bullish' else fibo['low'],
+            'sl': fibo['low'] if trend == 'bullish' else fibo['high']
+        })
+    elif orders_today == 1:
+        signals.append({
+            'direction': 'long' if trend == 'bullish' else 'short',
+            'entry_price': fibo['78.6'],
+            'tp': fibo['high'] if trend == 'bullish' else fibo['low'],
+            'sl': fibo['low'] if trend == 'bullish' else fibo['high']
+        })
+
+    return signals
