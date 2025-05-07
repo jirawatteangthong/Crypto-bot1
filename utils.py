@@ -9,7 +9,10 @@ exchange = ccxt.okx({
     'enableRateLimit': True,
     'options': {'defaultType': 'swap'}
 })
-
+def fetch_current_price():
+    ticker = exchange.fetch_ticker(SYMBOL)
+    return ticker['last']
+    
 def fetch_ohlcv(tf):
     return exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=100)
 
