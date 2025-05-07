@@ -4,15 +4,15 @@ from telegram import notify
 def get_fibo_zone():
     candles_m15 = fetch_ohlcv('15m')[-70:]
     candles_h1 = fetch_ohlcv('1h')[-50:]
-    
+
     trend_h1 = detect_bos(candles_h1)
     choch = detect_choch(candles_m15)
 
     if not choch:
-        return None, trend_h1, "none"  # ไม่มี CHoCH
+        return None, trend_h1, 'no_trade'
 
-    if choch != trend_h1 or trend_h1 is None:
-        return None, trend_h1, "skip"  # เทรนด์สวนหรือยังไม่ชัดเจน
+    if choch != trend_h1:
+        return None, trend_h1, 'skip'
 
     highs = [c[2] for c in candles_m15]
     lows = [c[3] for c in candles_m15]
@@ -44,4 +44,4 @@ def get_fibo_zone():
             'direction': 'short'
         }
 
-    return fibo, trend_h1, "ok"  # พร้อมเทรด
+    return fibo, trend_h1, 'valid'
