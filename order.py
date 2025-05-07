@@ -10,24 +10,16 @@ exchange = ccxt.okx({
     'options': {'defaultType': 'swap'}
 })
 
-latest_order_id = None
-entry_price = None
-
 def open_trade(signal, capital):
-    global latest_order_id, entry_price
     direction, price = signal['direction'], signal['price']
-    portion = 1.0 if not signal['ob'].get('partial') else 0.5
-    size = round((capital * LEVERAGE * portion) / price, 3)
+    size = round((capital * LEVERAGE) / price, 3)
     side = 'buy' if direction == 'long' else 'sell'
 
-    sl_price = round(signal['ob']['low'] * (1 - SL_BUFFER), 2) if direction == 'long' else round(signal['ob']['high'] * (1 + SL_BUFFER), 2)
-    tp_price = round(price + (price - sl_price) * TP_RATIO, 2) if direction == 'long' else round(price - (sl_price - price) * TP_RATIO, 2)
+    sl_price = round(signal['sl'], 2)
+    tp_price = round(signal['tp'], 2)
 
-    order = exchange.create_limit_order(SYMBOL, side, size, price)
-    latest_order_id = order['id']
-    entry_price = price
+    exchange.create_limit_order(SYMBOL, side, size, price)
 
-    # TP/SL OCO
     exchange.private_post_trade_order_algo({
         'instId': SYMBOL,
         'tdMode': 'cross',
@@ -44,13 +36,12 @@ def open_trade(signal, capital):
     return capital, "pending", False
 
 def monitor_trade():
-    global latest_order_id, entry_price
-    if not latest_order_id: return
-    orders = exchange.fetch_closed_orders(SYMBOL)
-    for o in orders:
-        if o['id'] == latest_order_id and o['status'] == 'closed':
-            close_price = float(o.get('average', entry_price))
-            pnl = (close_price - entry_price) if o['side'] == 'buy' else (entry_price - close_price)
-            result = "WIN" if pnl > 0 else "LOSS"
-            trade_notify(result=result, pnl=pnl, new_cap=CAPITAL + pnl)
-            latest_order_id = None
+    # Placeholder: à¸à¸£à¸±à¸ SL à¹à¸¡à¸·à¹à¸­ TP à¸à¸¶à¸ 50%
+    pass
+
+def has_open_position():
+    positions = exchange.fetch_positions([SYMBOL])
+    for pos in positions:
+        if float(pos['contracts']) > 0:
+            return True
+    return False
