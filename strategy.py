@@ -1,13 +1,16 @@
-from utils import fetch_ohlcv, detect_choch
+from utils import fetch_ohlcv, detect_choch, detect_bos
 
 def get_fibo_zone():
-    candles = fetch_ohlcv('15m')[-70:]
-    choch = detect_choch(candles)
-    if not choch:
-        return None, None
+    candles_m15 = fetch_ohlcv('15m')[-70:]
+    candles_h1 = fetch_ohlcv('1h')[-50:]
+    trend_h1 = detect_bos(candles_h1)  # ใช้ BOS จาก H1
 
-    highs = [c[2] for c in candles]
-    lows = [c[3] for c in candles]
+    choch = detect_choch(candles_m15)
+    if not choch or choch != trend_h1:
+        return None, None  # ถ้า M15 ไม่สอดคล้องกับ H1 → ไม่วาด Fibo
+
+    highs = [c[2] for c in candles_m15]
+    lows = [c[3] for c in candles_m15]
 
     if choch == 'bullish':
         fibo_high = max(highs)
