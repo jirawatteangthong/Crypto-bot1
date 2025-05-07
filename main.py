@@ -1,6 +1,8 @@
 notified_no_trade = False
 notified_skip_trade = False
 
+notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
+
 while True:
     try:
         if is_new_day():
