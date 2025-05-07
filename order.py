@@ -1,6 +1,6 @@
+import ccxt
 from config import *
 from telegram import trade_notify
-import ccxt
 
 exchange = ccxt.okx({
     'apiKey': API_KEY,
@@ -10,46 +10,31 @@ exchange = ccxt.okx({
     'options': {'defaultType': 'swap'}
 })
 
-open_positions = []
+open_order_ids = []
 
 def open_trade(signal, capital):
-    direction = signal['direction']
-    price = signal['entry_price']
-    size = 0.5
-    tp = signal['tp']
-    sl = signal['sl']
-    side = 'buy' if direction == 'long' else 'sell'
+    side = 'buy' if signal['direction'] == 'long' else 'sell'
+    order = exchange.create_limit_order(SYMBOL, side, ORDER_SIZE, signal['price'])
+    open_order_ids.append(order['id'])
 
-    exchange.create_limit_order(SYMBOL, side, size, price)
-    # จำลอง TP/SL ด้วยการ monitor ภายหลัง
-    open_positions.append({'price': price, 'tp': tp, 'sl': sl, 'side': side, 'size': size})
-
-    trade_notify(direction, price, size, tp, sl)
+    trade_notify(direction=signal['direction'], entry=signal['price'],
+                 size=ORDER_SIZE, tp=signal['tp'], sl=signal['sl'])
     return capital
 
 def monitor_trades(capital):
-    global open_positions
-    closed = []
+    global open_order_ids
+    for order_id in open_order_ids[:]:
+        try:
+            o = exchange.fetch_order(order_id, SYMBOL)
+            if o['status'] == 'closed':
+                pnl = float(o['info'].get('pnl', 0))
+                result = "WIN" if pnl > 0 else "LOSS"
+                capital += pnl
+                trade_notify(result=result, pnl=pnl, new_cap=capital)
+                open_order_ids.remove(order_id)
+        except:
+            continue
 
-    for pos in open_positions:
-        ticker = exchange.fetch_ticker(SYMBOL)
-        current_price = ticker['last']
-        win = False
-        loss = False
-
-        if pos['side'] == 'buy':
-            win = current_price >= pos['tp']
-            loss = current_price <= pos['sl']
-        else:
-            win = current_price <= pos['tp']
-            loss = current_price >= pos['sl']
-
-        if win or loss:
-            pnl = (pos['tp'] - pos['price']) * pos['size'] if win else (pos['sl'] - pos['price']) * pos['size']
-            pnl = pnl if pos['side'] == 'buy' else -pnl
-            capital += pnl
-            trade_notify(result="WIN" if win else "LOSS", pnl=pnl, new_cap=capital)
-            closed.append(pos)
-
-    open_positions = [pos for pos in open_positions if pos not in closed]
-    return capital
+def reset_daily_counter():
+    global open_order_ids
+    open_order_ids = []
