@@ -1,19 +1,14 @@
-def get_entry_signals(fibo, trend, orders_today):
-    signals = []
+from utils import fetch_current_price
 
-    if orders_today == 0:
-        signals.append({
-            'direction': 'long' if trend == 'bullish' else 'short',
-            'entry_price': fibo['61.8'],
-            'tp': fibo['high'] if trend == 'bullish' else fibo['low'],
-            'sl': fibo['low'] if trend == 'bullish' else fibo['high']
-        })
-    elif orders_today == 1:
-        signals.append({
-            'direction': 'long' if trend == 'bullish' else 'short',
-            'entry_price': fibo['78.6'],
-            'tp': fibo['high'] if trend == 'bullish' else fibo['low'],
-            'sl': fibo['low'] if trend == 'bullish' else fibo['high']
-        })
+def check_entries(fibo):
+    price = fetch_current_price()
+    entries = []
 
-    return signals
+    if fibo['trend'] == 'bullish' and fibo['61.8'] <= price <= fibo['78.6']:
+        entries.append({'direction': 'long', 'price': fibo['61.8'], 'tp': fibo['tp'], 'sl': fibo['sl']})
+        entries.append({'direction': 'long', 'price': fibo['78.6'], 'tp': fibo['tp'], 'sl': fibo['sl']})
+    elif fibo['trend'] == 'bearish' and fibo['78.6'] <= price <= fibo['61.8']:
+        entries.append({'direction': 'short', 'price': fibo['61.8'], 'tp': fibo['tp'], 'sl': fibo['sl']})
+        entries.append({'direction': 'short', 'price': fibo['78.6'], 'tp': fibo['tp'], 'sl': fibo['sl']})
+
+    return entries
