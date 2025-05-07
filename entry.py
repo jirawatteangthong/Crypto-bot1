@@ -1,18 +1,9 @@
 def check_entry_signal(zones, trend):
-    price = zones['swing']['close']
-    entry = None
+    price = zones['ob'][-1]['price']
+    last_ob = zones['ob'][-1]
 
-    for ob in zones['ob']:
-        if ob['low'] <= price <= ob['high']:
-            entry = ob
-            break
-
-    if entry:
-        return {'direction': trend, 'price': price, 'ob': entry}
-
-    fibo = zones['fibo']
-    if fibo['low'] <= price <= fibo['high']:
-        fibo_entry = {'high': fibo['high'], 'low': fibo['low']}
-        return {'direction': trend, 'price': price, 'ob': fibo_entry}
-
+    if trend == 'bullish' and last_ob['type'] == 'bullish':
+        return {'direction': 'long', 'price': price, 'ob': last_ob}
+    if trend == 'bearish' and last_ob['type'] == 'bearish':
+        return {'direction': 'short', 'price': price, 'ob': last_ob}
     return None
