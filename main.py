@@ -39,9 +39,6 @@ while True:
                         capital = open_trade(sig, capital)
                         positions.append(sig)
                         orders_today += 1
-            elif not notified_no_trade:
-                notify("[NO TRADE] ไม่มีสัญญาณเข้าเทรดวันนี้")
-                notified_no_trade = True
 
         positions, capital = monitor_trades(positions, capital)
 
