@@ -1,54 +1,73 @@
-import time
-from strategy import get_fibo_zone
-from entry import check_entry_signals
-from order import open_trade, monitor_trades
-from telegram import notify, health_check
-from config import CHECK_INTERVAL, HEALTH_CHECK_HOURS, START_CAPITAL
+import time, schedule
+from okx.MarketData import Market
+from okx.Account import Account
+from okx.Trade import Trade
+from config import *
+from strategy import detect_bos_choc, get_fibo_zone
+from order import set_leverage, place_entry_order, place_tp_sl_algo, check_open_positions
+from telegram import notify_start, notify_entry, notify_sl_move, notify_exit, notify_error, notify_health
+from utils import log
 
-capital = START_CAPITAL
+market = Market(API_KEY, API_SECRET, PASSPHRASE)
+account = Account(API_KEY, API_SECRET, PASSPHRASE)
+trade = Trade(API_KEY, API_SECRET, PASSPHRASE)
+
 orders_today = 0
-positions = []
-last_health = time.time()
+entry_price = 0
+breakeven_sl_set = False
 
-notified_skip_trade = False
+notify_start()
+set_leverage(account)
 
-def is_new_day():
-    return time.localtime().tm_hour == 0 and time.localtime().tm_min < 5
+def run_bot():
+    global orders_today, entry_price, breakeven_sl_set
 
-notify("✅ ระบบเริ่มทำงานแล้ว")
+    try:
+        pos = check_open_positions(account)
+        if pos:
+            # Check for breakeven SL
+            current_price = float(market.get_ticker(SYMBOL)['last'])
+            if not breakeven_sl_set and abs(current_price - entry_price) >= abs(entry_price - float(pos['liqPx'])) / 2:
+                new_sl = entry_price
+                place_tp_sl_algo(trade, pos['side'], pos['upl'], new_sl)
+                breakeven_sl_set = True
+                notify_sl_move(new_sl)
+            return
+
+        if orders_today >= 2:
+            return
+
+        candles = market.get_candlesticks(instId=SYMBOL, bar=TIMEFRAME, limit=CANDLE_LIMIT)['data']
+        candles = [{'open': float(c[1]), 'high': float(c[2]), 'low': float(c[3]), 'close': float(c[4])} for c in candles]
+        
+        bos, choc, trend, swing = detect_bos_choc(candles)
+        if bos and choc:
+            fibo_618, fibo_786, tp, sl = get_fibo_zone(trend, swing)
+            price = float(candles[-1]['close'])
+
+            if fibo_618 < price < fibo_786:
+                side = 'buy' if trend == 'up' else 'sell'
+                entry_price = price
+                place_entry_order(trade, side, POSITION_SIZE)
+                place_tp_sl_algo(trade, side, tp, sl)
+                notify_entry(side, price)
+                orders_today += 1
+                breakeven_sl_set = False
+    except Exception as e:
+        notify_error(str(e))
+        log(f"ERROR: {str(e)}")
+
+def reset_day():
+    global orders_today
+    orders_today = 0
+
+def health():
+    notify_health([SYMBOL])
+
+schedule.every(1).hours.do(run_bot)
+schedule.every().day.at("00:00").do(reset_day)
+schedule.every(6).hours.do(health)
 
 while True:
-    try:
-        if is_new_day():
-            orders_today = 0
-            positions = []
-            notified_skip_trade = False
-
-        if orders_today < 2:
-            fibo, trend_h1, status = get_fibo_zone()
-
-            if status == 'skip' and not notified_skip_trade:
-                notify("[SKIP TRADE] เทรนด์สวนทาง → ข้าม")
-                notified_skip_trade = True
-
-            if fibo:
-                signals = check_entry_signals(fibo, trend_h1)
-                for sig in signals:
-                    if orders_today >= 2:
-                        break
-                    if sig['level'] not in [p['level'] for p in positions]:
-                        capital = open_trade(sig, capital)
-                        positions.append(sig)
-                        orders_today += 1
-
-        positions, capital = monitor_trades(positions, capital)
-
-        if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
-            health_check(capital)
-            last_health = time.time()
-
-        time.sleep(CHECK_INTERVAL)
-
-    except Exception as e:
-        notify(f"[ERROR] {str(e)}")
-        time.sleep(60)
+    schedule.run_pending()
+    time.sleep(1)
