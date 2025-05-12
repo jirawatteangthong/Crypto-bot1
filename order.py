@@ -1,10 +1,40 @@
-from telegram import notify
-from config import ORDER_SIZE
-from utils import fetch_current_price
+import okx.Trade as Trade
+import okx.Account as Account
+from config import SYMBOL, LEVERAGE
+from utils import log
 
-def open_trade(signal, capital):
-    notify(f"[ENTRY] {signal['direction'].upper()} @ {signal['price']}\nSize: {ORDER_SIZE}\nTP: {signal['tp']}\nSL: {signal['sl']}")
-    return capital
+def set_leverage(account_client):
+    account_client.set_leverage(
+        lever=str(LEVERAGE), mgnMode='isolated', instId=SYMBOL
+    )
+    log(f"Set Leverage: {LEVERAGE}x")
 
-def monitor_trades(positions, capital):
-    return positions, capital
+def place_entry_order(client, side, size):
+    result = client.place_order(
+        instId=SYMBOL, tdMode='isolated', side=side, ordType='market', sz=str(size)
+    )
+    log(f"Entry Order: {side} {size} result: {result}")
+    return result['data'][0]['ordId']
+
+def place_tp_sl_algo(client, side, tp, sl):
+    algo = client.place_algo_order(
+        instId=SYMBOL,
+        tdMode='isolated',
+        side='sell' if side == 'buy' else 'buy',
+        ordType='oco',
+        sz='0.5',
+        tpTriggerPx=str(tp),
+        tpOrdPx=str(tp),
+        slTriggerPx=str(sl),
+        slOrdPx=str(sl),
+        triggerPxType='last'
+    )
+    log(f"OCO Order TP:{tp} SL:{sl} result: {algo}")
+    return algo
+
+def check_open_positions(account_client):
+    pos = account_client.get_positions(instType='SWAP')
+    for p in pos['data']:
+        if p['instId'] == SYMBOL and float(p['pos']) > 0:
+            return p
+    return None
