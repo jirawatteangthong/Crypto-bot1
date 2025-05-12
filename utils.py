@@ -6,9 +6,13 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
     try:
-        requests.post(url, data=payload)
-    except:
-        pass
+        response = requests.post(url, data=payload)
+        if response.status_code != 200:
+            print("Telegram API error:", response.status_code, response.text)
+        else:
+            print("Telegram message sent:", message)
+    except Exception as e:
+        print("Telegram send error:", str(e))
 
 # Logger
 logging.basicConfig(
