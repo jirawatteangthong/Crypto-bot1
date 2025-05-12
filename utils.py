@@ -1,47 +1,41 @@
-import ccxt
+import requests
 import datetime
-from config import SYMBOL, API_KEY, API_SECRET, API_PASSPHRASE
+import time
+from config import SYMBOL
 
-exchange = ccxt.okx({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'password': API_PASSPHRASE,
-    'enableRateLimit': True,
-    'options': {'defaultType': 'swap'}
-})
+# ดึงแท่งเทียนจาก OKX
+def fetch_candles(timeframe='1h', limit=200):
+    url = f"https://www.okx.com/api/v5/market/candles"
+    params = {
+        'instId': SYMBOL,
+        'bar': timeframe,
+        'limit': limit
+    }
+    r = requests.get(url, params=params)
+    r.raise_for_status()
+    raw = r.json()['data']
+    candles = [
+        {
+            'timestamp': int(c[0]),
+            'open': float(c[1]),
+            'high': float(c[2]),
+            'low': float(c[3]),
+            'close': float(c[4])
+        }
+        for c in raw[::-1]
+    ]
+    return candles
 
+# ดึงราคาปัจจุบัน
 def fetch_current_price():
-    ticker = exchange.fetch_ticker(SYMBOL)
-    return ticker['last']
+    url = f"https://www.okx.com/api/v5/market/ticker"
+    params = {'instId': SYMBOL}
+    r = requests.get(url, params=params)
+    r.raise_for_status()
+    data = r.json()['data'][0]
+    return float(data['last'])
 
-def fetch_ohlcv(tf):
-    return exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=200)
-
-def detect_bos(candles):
-    highs = [c[2] for c in candles]
-    lows = [c[3] for c in candles]
-    closes = [c[4] for c in candles]
-    recent_high = max(highs[-10:])
-    recent_low = min(lows[-10:])
-    prev_high = max(highs[-20:-10])
-    prev_low = min(lows[-20:-10])
-
-    if closes[-1] > prev_high:
-        return 'bullish'
-    elif closes[-1] < prev_low:
-        return 'bearish'
-    return None
-
-def detect_choch(candles):
-    highs = [c[2] for c in candles]
-    lows = [c[3] for c in candles]
-    closes = [c[4] for c in candles]
-
-    if closes[-1] > max(highs[-20:-10]) and closes[-2] < max(highs[-20:-10]):
-        return 'bullish'
-    elif closes[-1] < min(lows[-20:-10]) and closes[-2] > min(lows[-20:-10]):
-        return 'bearish'
-    return None
-
+# เช็คว่าเป็นวันใหม่หรือยัง (เริ่มใหม่ตอน 00:00 UTC)
 def is_new_day():
-    return datetime.datetime.utcnow().hour == 0
+    now = datetime.datetime.utcnow()
+    return now.hour == 0 and now.minute < 5
