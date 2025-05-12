@@ -16,7 +16,7 @@ orders_today = 0
 entry_price = 0
 breakeven_sl_set = False
 
-notify_start():print("Bot started and notify_start() called")
+notify_start()
 set_leverage(account)
 
 def run_bot():
