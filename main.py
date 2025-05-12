@@ -17,6 +17,7 @@ entry_price = 0
 breakeven_sl_set = False
 
 notify_start()
+print("notify_start called")  # เพิ่มบรรทัดนี้
 set_leverage(account)
 
 def run_bot():
