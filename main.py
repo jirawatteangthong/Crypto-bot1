@@ -2,18 +2,20 @@ import time
 from strategy import get_fibo_zone
 from entry import check_entry_signals
 from order import open_trade, monitor_trades
-from telegram import notify
-from config import CHECK_INTERVAL, HEALTH_CHECK_HOURS
-from utils import is_new_day
+from telegram import notify, health_check
+from config import CHECK_INTERVAL, HEALTH_CHECK_HOURS, START_CAPITAL
 
-capital = 49.0
+capital = START_CAPITAL
 orders_today = 0
 positions = []
 last_health = time.time()
 
 notified_skip_trade = False
 
-notify("ระบบเริ่มทำงาน")
+def is_new_day():
+    return time.localtime().tm_hour == 0 and time.localtime().tm_min < 5
+
+notify("✅ ระบบเริ่มทำงานแล้ว")
 
 while True:
     try:
@@ -42,7 +44,6 @@ while True:
         positions, capital = monitor_trades(positions, capital)
 
         if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
-            from telegram import health_check
             health_check(capital)
             last_health = time.time()
 
