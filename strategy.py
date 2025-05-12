@@ -1,50 +1,34 @@
 from utils import fetch_ohlcv, detect_bos, detect_choch
-from telegram import notify
+
+last_bos = None
 
 def get_fibo_zone():
-    candles_m15 = fetch_ohlcv('15m')[-200:]
-    candles_h1 = fetch_ohlcv('1h')[-200:]
-    
-    trend_h1 = detect_bos(candles_h1)
-    choch = detect_choch(candles_m15)
+    global last_bos
+    candles_h1 = fetch_ohlcv('1h')
+    trend = detect_bos(candles_h1)
 
-    if not trend_h1:
-        return None, None, 'wait'
+    if trend != last_bos and trend is not None:
+        last_bos = trend
 
-    if not choch:
-        return None, trend_h1, 'wait'
+    choch = detect_choch(candles_h1)
+    if not choch or choch != trend:
+        return None, trend, 'wait'
 
-    if choch != trend_h1:
-        return None, trend_h1, 'skip'
+    high = max([c[2] for c in candles_h1])
+    low = min([c[3] for c in candles_h1])
 
-    highs = [c[2] for c in candles_h1]
-    lows = [c[3] for c in candles_h1]
-    swing_high = max(highs[-70:])
-    swing_low = min(lows[-70:])
+    direction = 'long' if trend == 'bullish' else 'short'
 
-    if trend_h1 == 'bullish':
-        fibo = {
-            'low': swing_low,
-            'high': swing_high,
-            'levels': {
-                '61.8': swing_low + 0.618 * (swing_high - swing_low),
-                '78.6': swing_low + 0.786 * (swing_high - swing_low)
-            },
-            'tp': swing_high,
-            'sl': swing_low,
-            'direction': 'long'
-        }
-    else:
-        fibo = {
-            'low': swing_low,
-            'high': swing_high,
-            'levels': {
-                '61.8': swing_high - 0.618 * (swing_high - swing_low),
-                '78.6': swing_high - 0.786 * (swing_high - swing_low)
-            },
-            'tp': swing_low,
-            'sl': swing_high,
-            'direction': 'short'
-        }
+    fibo = {
+        'direction': direction,
+        'levels': {
+            '0.0': low if direction == 'long' else high,
+            '61.8': low + 0.618 * (high - low) if direction == 'long' else high - 0.618 * (high - low),
+            '78.6': low + 0.786 * (high - low) if direction == 'long' else high - 0.786 * (high - low),
+            '100': high if direction == 'long' else low
+        },
+        'tp': high - 10 if direction == 'long' else low + 10,
+        'sl': low - 20 if direction == 'long' else high + 20
+    }
 
-    return fibo, trend_h1, 'ok'
+    return fibo, trend, 'valid'
