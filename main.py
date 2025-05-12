@@ -1,33 +1,28 @@
 import time
 from config import *
+from telegram import notify, health_check
 from strategy import get_fibo_zone
 from entry import check_entry_signals
 from order import open_trade, monitor_trades
-from telegram import notify, health_check
-from utils import is_new_day
 
 capital = START_CAPITAL
-last_health = time.time()
 orders_today = 0
 positions = []
-notified_no_trade = False
-notified_skip_trade = False
+last_health = time.time()
 
-notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
+notified_skip_trade = False
 
 while True:
     try:
         if is_new_day():
             orders_today = 0
             positions = []
-            notified_no_trade = False
             notified_skip_trade = False
 
         if orders_today < 2:
             fibo, trend_h1, status = get_fibo_zone()
 
             if status == 'skip' and not notified_skip_trade:
-                notify("[SKIP TRADE] เทรนด์สวนทาง → ข้าม")
                 notified_skip_trade = True
 
             if fibo:
