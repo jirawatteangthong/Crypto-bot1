@@ -1,16 +1,8 @@
-import requests
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
-from utils import get_okx_balances
+from utils import send_telegram_message
 
-def notify(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    requests.post(url, data=data)
-
-def health_check(capital):
-    balances = get_okx_balances()
-    notify(f"[HEALTH CHECK]\nCapital: ${capital:.2f}\n\n[บัญชี OKX]\n{balances}")
+def notify_start(): send_telegram_message("Bot Started.")
+def notify_entry(side, price): send_telegram_message(f"ENTRY: {side.upper()} at {price}")
+def notify_exit(side, price, result): send_telegram_message(f"EXIT: {side.upper()} at {price} with {result}")
+def notify_sl_move(new_sl): send_telegram_message(f"SL moved to breakeven: {new_sl}")
+def notify_health(pairs): send_telegram_message(f"Health check: {', '.join(pairs)}")
+def notify_error(err): send_telegram_message(f"ERROR: {err}")
