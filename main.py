@@ -16,7 +16,7 @@ notified_skip_trade = False
 # Check for open positions on bot start
 check_open_positions()
 
-notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
+notify("[BOT STARTED] บอททำงานแล้ว")
 
 while True:
     try:
@@ -29,10 +29,6 @@ while True:
         if orders_today < 2:
             fibo, trend_h1, status = get_fibo_zone()
 
-            if status == 'skip' and not notified_skip_trade:
-                notify("[SKIP TRADE] เทรนด์สวนทาง → ข้าม")
-                notified_skip_trade = True
-
             if fibo:
                 signals = check_entry_signals(fibo, trend_h1)
                 for sig in signals:
@@ -42,9 +38,6 @@ while True:
                         capital = open_trade(sig, capital)
                         positions.append(sig)
                         orders_today += 1
-            elif not notified_no_trade:
-                notify("[NO TRADE] ไม่มีสัญญาณเข้าเทรดวันนี้")
-                notified_no_trade = True
 
         positions, capital = monitor_trades(positions, capital)
 
