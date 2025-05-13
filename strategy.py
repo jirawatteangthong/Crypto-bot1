@@ -1,49 +1,40 @@
 from utils import fetch_ohlcv, detect_bos, detect_choch
-from telegram import notify
 
 def get_fibo_zone():
-    candles_h1 = fetch_ohlcv('1h')[-200:]
-    
-    trend_h1 = detect_bos(candles_h1)
-    choch = detect_choch(candles_h1)
+    candles = fetch_ohlcv('1h')
+    trend = detect_bos(candles)
+    choch = detect_choch(candles)
 
-    if not trend_h1:
-        return None, None, 'wait'
+    if not trend:
+        return None, None, 'no_trend'
+    if not choch or choch != trend:
+        return None, trend, 'skip'
 
-    if not choch:
-        return None, trend_h1, 'wait'
+    # ใช้ swing ล่าสุดจาก 50 แท่ง H1
+    highs = [c[2] for c in candles[-50:]]
+    lows = [c[3] for c in candles[-50:]]
+    swing_high = max(highs)
+    swing_low = min(lows)
 
-    if choch != trend_h1:
-        return None, trend_h1, 'skip'
-
-    highs = [c[2] for c in candles_h1]
-    lows = [c[3] for c in candles_h1]
-    swing_high = max(highs[-70:])
-    swing_low = min(lows[-70:])
-
-    if trend_h1 == 'bullish':
+    if trend == 'bullish':
         fibo = {
-            'low': swing_low,
-            'high': swing_high,
+            'direction': 'long',
             'levels': {
-                '61.8': swing_low + 0.618 * (swing_high - swing_low),
-                '78.6': swing_low + 0.786 * (swing_high - swing_low)
+                '78.6': swing_low + 0.786 * (swing_high - swing_low),
+                '61.8': swing_low + 0.618 * (swing_high - swing_low)
             },
-            'tp': swing_high - 10,  # TP slightly before high
-            'sl': swing_high + 20,  # SL slightly above high
-            'direction': 'long'
+            'tp': swing_low + 0.10 * (swing_high - swing_low),
+            'sl': swing_high + 0.20 * (swing_high - swing_low)
         }
     else:
         fibo = {
-            'low': swing_low,
-            'high': swing_high,
+            'direction': 'short',
             'levels': {
-                '61.8': swing_high - 0.618 * (swing_high - swing_low),
-                '78.6': swing_high - 0.786 * (swing_high - swing_low)
+                '78.6': swing_high - 0.786 * (swing_high - swing_low),
+                '61.8': swing_high - 0.618 * (swing_high - swing_low)
             },
-            'tp': swing_low + 10,  # TP slightly before low
-            'sl': swing_low - 20,  # SL slightly below low
-            'direction': 'short'
+            'tp': swing_high - 0.10 * (swing_high - swing_low),
+            'sl': swing_low - 0.20 * (swing_high - swing_low)
         }
 
-    return fibo, trend_h1, 'ok'
+    return fibo, trend, 'ok'
