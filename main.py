@@ -25,12 +25,14 @@ else:
 
 while True:
     try:
+        # รีเซ็ตทุกวัน
         if is_new_day():
             orders_today = 0
             positions = []
             notified_no_trade = False
             notified_skip_trade = False
 
+        # เงื่อนไขเปิดออเดอร์ใหม่
         if orders_today < 2:
             fibo, trend_h1, status = get_fibo_zone()
 
@@ -44,9 +46,9 @@ while True:
                         positions.append(sig)
                         orders_today += 1
 
-        # ตรวจสอบว่าออเดอร์ถูกปิดหรือยัง
+        # ตรวจสอบออเดอร์ที่เปิดอยู่
         positions, delta = monitor_trades(positions, capital)
-capital += delta
+        capital += delta
 
         # Health check ทุก 6 ชั่วโมง
         if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
