@@ -1,8 +1,17 @@
-from utils import send_telegram_message
+import requests
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
-def notify_start(): send_telegram_message("===> Bot Started")
-def notify_entry(side, price): send_telegram_message(f"ENTRY: {side.upper()} at {price}")
-def notify_exit(side, price, result): send_telegram_message(f"EXIT: {side.upper()} at {price} with {result}")
-def notify_sl_move(new_sl): send_telegram_message(f"SL moved to breakeven: {new_sl}")
-def notify_health(pairs): send_telegram_message(f"Health check OK: {', '.join(pairs)}")
-def notify_error(err): send_telegram_message(f"ERROR: {err}")
+def notify(message):
+    requests.post(
+        f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
+        json={'chat_id': TELEGRAM_CHAT_ID, 'text': message}
+    )
+
+def trade_notify(direction=None, entry=None, size=None, tp=None, sl=None, result=None, pnl=None, new_cap=None):
+    if direction:
+        notify(f"[ENTRY] {direction.upper()} @ {entry}\nSize: {size}\nTP: {tp}\nSL: {sl}")
+    if result:
+        notify(f"[CLOSE] {result} | PnL: {pnl:.2f} USDT\nCapital: {new_cap:.2f}")
+
+def health_check(capital):
+    notify(f"[HEALTH CHECK] BOT ALIVE\nCurrent Capital: {capital:.2f} USDT")
