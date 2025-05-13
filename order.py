@@ -12,50 +12,71 @@ exchange = ccxt.okx({
 
 def open_trade(signal, capital):
     side = 'buy' if signal['direction'] == 'long' else 'sell'
+    opposite_side = 'sell' if side == 'buy' else 'buy'
 
+    tp = signal['tp']
+    sl = signal['sl']
+    price = signal['price']
+
+    # สร้างออเดอร์เข้า พร้อมตั้ง TP / SL ด้วย OCO
     params = {
-        'tpTriggerPx': str(signal['tp']),
-        'tpOrdPx': '-1',
-        'slTriggerPx': str(signal['sl']),
-        'slOrdPx': '-1'
+        'tdMode': 'cross',
+        'posSide': 'long' if side == 'buy' else 'short',
+        'ordType': 'oco',
+        'tpTriggerPx': str(tp),
+        'tpOrdPx': str(tp),
+        'slTriggerPx': str(sl),
+        'slOrdPx': str(sl)
     }
 
-    order = exchange.create_order(SYMBOL, 'limit', side, ORDER_SIZE, signal['price'], params)
-    trade_notify(direction=signal['direction'], entry=signal['price'],
-                 size=ORDER_SIZE, tp=signal['tp'], sl=signal['sl'])
+    order = exchange.create_order(
+        symbol=SYMBOL,
+        type='limit',
+        side=side,
+        amount=ORDER_SIZE,
+        price=price,
+        params=params
+    )
+
+    trade_notify(direction=signal['direction'], entry=price,
+                 size=ORDER_SIZE, tp=tp, sl=sl)
+
     return capital
 
-def monitor_trades(positions):
+def get_open_positions():
+    positions = exchange.fetch_positions([SYMBOL])
+    result = []
+    for pos in positions:
+        if float(pos['contracts']) > 0:
+            direction = 'long' if pos['side'] == 'long' else 'short'
+            result.append({
+                'direction': direction,
+                'price': float(pos['entryPrice']),
+                'size': float(pos['contracts']),
+                'level': None  # ยังไม่มีข้อมูล level
+            })
+    return result
+
+def monitor_trades(positions, capital):
     new_positions = []
-    capital_change = 0
+    delta = 0
 
     for pos in positions:
-        try:
-            orders = exchange.fetch_open_orders(SYMBOL)
-            if not any(abs(o['price'] - pos['price']) < 1e-6 for o in orders):
-                pnl = 5  # ใช้ค่านี้แทนกำไรจริง (ควรแก้ให้ดึง PnL จริง)
-                result = "WIN" if pnl > 0 else "LOSS"
-                trade_notify(result=result, pnl=pnl, new_cap=capital_change + pnl)
-                capital_change += pnl
-            else:
-                new_positions.append(pos)
-        except Exception:
-            continue
+        pos_side = 'long' if pos['direction'] == 'long' else 'short'
+        all_positions = exchange.fetch_positions([SYMBOL])
+        active = any(float(p['contracts']) > 0 and p['side'] == pos_side for p in all_positions)
 
-    return new_positions, capital_change
+        if not active:
+            # ปิดแล้ว คำนวณกำไรขาดทุน
+            closed = exchange.fetch_my_trades(SYMBOL, limit=5)
+            for t in closed[::-1]:
+                if (t['side'] == pos['direction']) and (abs(t['amount'] - ORDER_SIZE) < 1e-3):
+                    pnl = float(t.get('info', {}).get('pnl', 0))
+                    capital += pnl
+                    delta += pnl
+                    trade_notify(result="WIN" if pnl > 0 else "LOSS", pnl=pnl, new_cap=capital)
+                    break
+        else:
+            new_positions.append(pos)
 
-def get_open_positions():
-    positions = []
-    try:
-        orders = exchange.fetch_open_orders(SYMBOL)
-        for o in orders:
-            pos = {
-                'direction': 'long' if o['side'] == 'buy' else 'short',
-                'price': o['price'],
-                'size': o['amount'],
-                'level': 'unknown'
-            }
-            positions.append(pos)
-    except:
-        pass
-    return positions
+    return new_positions, delta
