@@ -12,16 +12,7 @@ exchange = ccxt.okx({
 
 open_order_ids = []
 
-def open_trade(signal, capital):
-    side = 'buy' if signal['direction'] == 'long' else 'sell'
-    order = exchange.create_limit_order(SYMBOL, side, ORDER_SIZE, signal['price'])
-    open_order_ids.append(order['id'])
-
-    trade_notify(direction=signal['direction'], entry=signal['price'],
-                 size=ORDER_SIZE, tp=signal['tp'], sl=signal['sl'])
-    return capital
-
-def monitor_trades(capital):
+def monitor_trades(positions, capital):
     global open_order_ids
     for order_id in open_order_ids[:]:
         try:
@@ -32,6 +23,8 @@ def monitor_trades(capital):
                 capital += pnl
                 trade_notify(result=result, pnl=pnl, new_cap=capital)
                 open_order_ids.remove(order_id)
+                # ลบ position ที่เกี่ยวข้องด้วย
+                positions = [p for p in positions if p['price'] != o['price']]
         except:
             continue
-    return open_order_ids, capital
+    return positions, capital
