@@ -45,7 +45,8 @@ while True:
                         orders_today += 1
 
         # ตรวจสอบว่าออเดอร์ถูกปิดหรือยัง
-        positions, capital = monitor_trades(positions)
+        positions, delta = monitor_trades(positions, capital)
+capital += delta
 
         # Health check ทุก 6 ชั่วโมง
         if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
