@@ -1,21 +1,52 @@
-import logging
-import requests
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+import ccxt
+import datetime
+from config import *
 
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
-    try:
-        r = requests.post(url, data=payload)
-        print(f"Telegram Response: {r.status_code} | {r.text}")
-    except Exception as e:
-        print(f"Telegram ERROR: {e}")
+exchange = ccxt.okx({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'password': API_PASSPHRASE,
+    'enableRateLimit': True,
+    'options': {'defaultType': 'swap'}
+})
 
-logging.basicConfig(
-    filename="trading_log.txt",
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s"
-)
+def fetch_current_price():
+    ticker = exchange.fetch_ticker(SYMBOL)
+    return ticker['last']
 
-def log(msg):
-    logging.info(msg)
+def fetch_ohlcv(tf):
+    return exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=200)
+
+def detect_bos(candles):
+    highs = [c[2] for c in candles]
+    lows = [c[3] for c in candles]
+    closes = [c[4] for c in candles]
+
+    recent_high = max(highs[-10:])
+    recent_low = min(lows[-10:])
+    prev_high = max(highs[-20:-10])
+    prev_low = min(lows[-20:-10])
+
+    if closes[-1] > prev_high:
+        return 'bullish'
+    elif closes[-1] < prev_low:
+        return 'bearish'
+    return None
+
+def detect_choch(candles):
+    highs = [c[2] for c in candles]
+    lows = [c[3] for c in candles]
+    closes = [c[4] for c in candles]
+
+    if closes[-1] > max(highs[-20:-10]) and closes[-2] < max(highs[-20:-10]):
+        return 'bullish'
+    elif closes[-1] < min(lows[-20:-10]) and closes[-2] > min(lows[-20:-10]):
+        return 'bearish'
+    return None
+
+def is_new_day():
+    return datetime.datetime.utcnow().hour == 0
+
+def check_open_positions():
+    # Check for any open positions and handle them (if any)
+    pass
