@@ -1,6 +1,7 @@
 import ccxt
 from config import *
 from telegram import trade_notify
+from utils import fetch_current_price
 
 exchange = ccxt.okx({
     'apiKey': API_KEY,
@@ -12,71 +13,60 @@ exchange = ccxt.okx({
 
 def open_trade(signal, capital):
     side = 'buy' if signal['direction'] == 'long' else 'sell'
-    opposite_side = 'sell' if side == 'buy' else 'buy'
 
-    tp = signal['tp']
-    sl = signal['sl']
-    price = signal['price']
+    # คำนวณ TP/SL ที่ Fibo 10 และ 110/120
+    tp_price = signal['tp']
+    sl_price = signal['sl']
 
-    # สร้างออเดอร์เข้า พร้อมตั้ง TP / SL ด้วย OCO
+    # เปิดออเดอร์พร้อม TP/SL ด้วย OCO
     params = {
-        'tdMode': 'cross',
-        'posSide': 'long' if side == 'buy' else 'short',
-        'ordType': 'oco',
-        'tpTriggerPx': str(tp),
-        'tpOrdPx': str(tp),
-        'slTriggerPx': str(sl),
-        'slOrdPx': str(sl)
+        'tpTriggerPx': tp_price,
+        'tpOrdPx': tp_price,
+        'slTriggerPx': sl_price,
+        'slOrdPx': sl_price
     }
 
-    order = exchange.create_order(
-        symbol=SYMBOL,
-        type='limit',
-        side=side,
-        amount=ORDER_SIZE,
-        price=price,
-        params=params
-    )
-
-    trade_notify(direction=signal['direction'], entry=price,
-                 size=ORDER_SIZE, tp=tp, sl=sl)
-
+    order = exchange.create_limit_order(SYMBOL, side, ORDER_SIZE, signal['price'], params)
+    trade_notify(direction=signal['direction'], entry=signal['price'],
+                 size=ORDER_SIZE, tp=tp_price, sl=sl_price)
     return capital
 
-def get_open_positions():
-    positions = exchange.fetch_positions([SYMBOL])
-    result = []
-    for pos in positions:
-        if float(pos['contracts']) > 0:
-            direction = 'long' if pos['side'] == 'long' else 'short'
-            result.append({
-                'direction': direction,
-                'price': float(pos['entryPrice']),
-                'size': float(pos['contracts']),
-                'level': None  # ยังไม่มีข้อมูล level
-            })
-    return result
-
 def monitor_trades(positions, capital):
-    new_positions = []
-    delta = 0
-
+    active_positions = []
     for pos in positions:
-        pos_side = 'long' if pos['direction'] == 'long' else 'short'
-        all_positions = exchange.fetch_positions([SYMBOL])
-        active = any(float(p['contracts']) > 0 and p['side'] == pos_side for p in all_positions)
-
-        if not active:
-            # ปิดแล้ว คำนวณกำไรขาดทุน
-            closed = exchange.fetch_my_trades(SYMBOL, limit=5)
-            for t in closed[::-1]:
-                if (t['side'] == pos['direction']) and (abs(t['amount'] - ORDER_SIZE) < 1e-3):
-                    pnl = float(t.get('info', {}).get('pnl', 0))
-                    capital += pnl
-                    delta += pnl
-                    trade_notify(result="WIN" if pnl > 0 else "LOSS", pnl=pnl, new_cap=capital)
+        try:
+            side = 'buy' if pos['direction'] == 'long' else 'sell'
+            open_orders = exchange.fetch_open_orders(SYMBOL)
+            filled = True
+            for o in open_orders:
+                if abs(o['price'] - pos['price']) < 1e-5 and o['side'] == side:
+                    filled = False
                     break
-        else:
-            new_positions.append(pos)
+            if filled:
+                price_now = fetch_current_price()
+                pnl = (price_now - pos['price']) * ORDER_SIZE * LEVERAGE
+                pnl = pnl if pos['direction'] == 'long' else -pnl
+                capital += pnl
+                result = "WIN" if pnl > 0 else "LOSS"
+                trade_notify(result=result, pnl=pnl, new_cap=capital)
+            else:
+                active_positions.append(pos)
+        except Exception as e:
+            continue
+    return active_positions, capital
 
-    return new_positions, delta
+def get_open_positions():
+    try:
+        orders = exchange.fetch_open_orders(SYMBOL)
+        positions = []
+        for o in orders:
+            pos = {
+                'direction': 'long' if o['side'] == 'buy' else 'short',
+                'price': float(o['price']),
+                'size': float(o['amount']),
+                'level': '61.8' if '61.8' in o['info'].get('tag', '') else '78.6'
+            }
+            positions.append(pos)
+        return positions
+    except:
+        return []
