@@ -1,3 +1,2 @@
-okx
-schedule
-requests
+ccxt==3.0.58
+requests==2.28.1
