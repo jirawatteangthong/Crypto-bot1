@@ -2,9 +2,9 @@ import time
 from config import *
 from strategy import get_fibo_zone
 from entry import check_entry_signals
-from order import open_trade, monitor_trades
+from order import open_trade, monitor_trades, get_open_positions
 from telegram import notify, health_check
-from utils import is_new_day, check_open_positions
+from utils import is_new_day
 
 capital = START_CAPITAL
 last_health = time.time()
@@ -13,10 +13,15 @@ positions = []
 notified_no_trade = False
 notified_skip_trade = False
 
-# Check for open positions on bot start
-check_open_positions()
+notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
 
-notify("[BOT STARTED] บอททำงานแล้ว")
+# ตรวจสอบออเดอร์ค้างเมื่อเริ่มระบบ
+positions = get_open_positions()
+if positions:
+    for p in positions:
+        notify(f"[RESTORE] ยังมี position ค้างอยู่: {p['direction'].upper()} @ {p['price']} | Size: {p['size']}")
+else:
+    notify("[RESTORE] ไม่มีออเดอร์ค้างจากระบบก่อนหน้า")
 
 while True:
     try:
@@ -39,8 +44,10 @@ while True:
                         positions.append(sig)
                         orders_today += 1
 
-        positions, capital = monitor_trades(positions, capital)
+        # ตรวจสอบว่าออเดอร์ถูกปิดหรือยัง
+        positions, capital = monitor_trades(positions)
 
+        # Health check ทุก 6 ชั่วโมง
         if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
             health_check(capital)
             last_health = time.time()
