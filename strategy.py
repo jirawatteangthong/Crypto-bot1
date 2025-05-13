@@ -1,42 +1,49 @@
-def detect_bos_choc(candles):
-    highs = [c['high'] for c in candles]
-    lows = [c['low'] for c in candles]
-    closes = [c['close'] for c in candles]
+from utils import fetch_ohlcv, detect_bos, detect_choch
+from telegram import notify
 
-    bos = False
-    choc = False
-    trend = ''
-    swing = {}
+def get_fibo_zone():
+    candles_h1 = fetch_ohlcv('1h')[-200:]
+    
+    trend_h1 = detect_bos(candles_h1)
+    choch = detect_choch(candles_h1)
 
-    if highs[-1] > highs[-2] and closes[-1] > highs[-2]:
-        bos = True
-        trend = 'up'
-    elif lows[-1] < lows[-2] and closes[-1] < lows[-2]:
-        bos = True
-        trend = 'down'
+    if not trend_h1:
+        return None, None, 'wait'
 
-    if trend == 'up' and closes[-1] < lows[-3]:
-        choc = True
-    elif trend == 'down' and closes[-1] > highs[-3]:
-        choc = True
+    if not choch:
+        return None, trend_h1, 'wait'
 
-    swing = {
-        'high': max(highs[-20:]),
-        'low': min(lows[-20:])
-    }
+    if choch != trend_h1:
+        return None, trend_h1, 'skip'
 
-    return bos, choc, trend, swing
+    highs = [c[2] for c in candles_h1]
+    lows = [c[3] for c in candles_h1]
+    swing_high = max(highs[-70:])
+    swing_low = min(lows[-70:])
 
-def get_fibo_zone(trend, swing):
-    if trend == 'up':
-        fibo_618 = swing['low'] + (swing['high'] - swing['low']) * 0.618
-        fibo_786 = swing['low'] + (swing['high'] - swing['low']) * 0.786
-        tp = swing['high'] - (swing['high'] - swing['low']) * 0.01
-        sl = swing['low'] - (swing['high'] - swing['low']) * 0.1
+    if trend_h1 == 'bullish':
+        fibo = {
+            'low': swing_low,
+            'high': swing_high,
+            'levels': {
+                '61.8': swing_low + 0.618 * (swing_high - swing_low),
+                '78.6': swing_low + 0.786 * (swing_high - swing_low)
+            },
+            'tp': swing_high - 10,  # TP slightly before high
+            'sl': swing_high + 20,  # SL slightly above high
+            'direction': 'long'
+        }
     else:
-        fibo_618 = swing['high'] - (swing['high'] - swing['low']) * 0.618
-        fibo_786 = swing['high'] - (swing['high'] - swing['low']) * 0.786
-        tp = swing['low'] + (swing['high'] - swing['low']) * 0.01
-        sl = swing['high'] + (swing['high'] - swing['low']) * 0.1
+        fibo = {
+            'low': swing_low,
+            'high': swing_high,
+            'levels': {
+                '61.8': swing_high - 0.618 * (swing_high - swing_low),
+                '78.6': swing_high - 0.786 * (swing_high - swing_low)
+            },
+            'tp': swing_low + 10,  # TP slightly before low
+            'sl': swing_low - 20,  # SL slightly below low
+            'direction': 'short'
+        }
 
-    return fibo_618, fibo_786, tp, sl
+    return fibo, trend_h1, 'ok'
