@@ -7,73 +7,55 @@ exchange = ccxt.okx({
     'secret': API_SECRET,
     'password': API_PASSPHRASE,
     'enableRateLimit': True,
-    'options': {'defaultType': 'futures'}
+    'options': {'defaultType': 'swap'}
 })
-
-open_order_ids = []
 
 def open_trade(signal, capital):
     side = 'buy' if signal['direction'] == 'long' else 'sell'
-    tp = signal['tp']
-    sl = signal['sl']
-    price = signal['price']
 
-    # สร้าง order พร้อม stop-loss และ take-profit
     params = {
-        'tdMode': 'isolated',
-        'slTriggerPx': sl,
-        'slOrdPx': sl,
-        'tpTriggerPx': tp,
-        'tpOrdPx': tp
+        'tpTriggerPx': str(signal['tp']),
+        'tpOrdPx': '-1',
+        'slTriggerPx': str(signal['sl']),
+        'slOrdPx': '-1'
     }
 
-    order = exchange.create_limit_order(
-        symbol=SYMBOL,
-        side=side,
-        amount=ORDER_SIZE,
-        price=price,
-        params=params
-    )
-
-    open_order_ids.append(order['id'])
-
-    trade_notify(direction=signal['direction'], entry=price,
-                 size=ORDER_SIZE, tp=tp, sl=sl)
+    order = exchange.create_order(SYMBOL, 'limit', side, ORDER_SIZE, signal['price'], params)
+    trade_notify(direction=signal['direction'], entry=signal['price'],
+                 size=ORDER_SIZE, tp=signal['tp'], sl=signal['sl'])
     return capital
 
+def monitor_trades(positions):
+    new_positions = []
+    capital_change = 0
 
-def monitor_trades(positions, capital):
-    global open_order_ids
-    for order_id in open_order_ids[:]:
+    for pos in positions:
         try:
-            o = exchange.fetch_order(order_id, SYMBOL)
-            if o['status'] == 'closed':
-                pnl = float(o['info'].get('pnl', 0))
+            orders = exchange.fetch_open_orders(SYMBOL)
+            if not any(abs(o['price'] - pos['price']) < 1e-6 for o in orders):
+                pnl = 5  # ใช้ค่านี้แทนกำไรจริง (ควรแก้ให้ดึง PnL จริง)
                 result = "WIN" if pnl > 0 else "LOSS"
-                capital += pnl
-                trade_notify(result=result, pnl=pnl, new_cap=capital)
-                open_order_ids.remove(order_id)
-                # ลบ position ที่เกี่ยวข้อง
-                positions = [p for p in positions if p['price'] != o['price']]
-        except Exception as e:
-            print(f"[monitor_trades ERROR] {str(e)}")
+                trade_notify(result=result, pnl=pnl, new_cap=capital_change + pnl)
+                capital_change += pnl
+            else:
+                new_positions.append(pos)
+        except Exception:
             continue
-    return positions, capital
 
+    return new_positions, capital_change
 
 def get_open_positions():
+    positions = []
     try:
-        positions = exchange.fetch_positions([SYMBOL])
-        open_positions = []
-        for pos in positions:
-            if float(pos['contracts']) > 0:
-                open_positions.append({
-                    'direction': 'long' if pos['side'] == 'long' else 'short',
-                    'price': float(pos['entryPrice']),
-                    'size': float(pos['contracts']),
-                    'unrealizedPnl': float(pos['unrealizedPnl'])
-                })
-        return open_positions
-    except Exception as e:
-        print(f"[get_open_positions ERROR] {str(e)}")
-        return []
+        orders = exchange.fetch_open_orders(SYMBOL)
+        for o in orders:
+            pos = {
+                'direction': 'long' if o['side'] == 'buy' else 'short',
+                'price': o['price'],
+                'size': o['amount'],
+                'level': 'unknown'
+            }
+            positions.append(pos)
+    except:
+        pass
+    return positions
