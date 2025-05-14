@@ -1,31 +1,18 @@
-import time
-from strategy import analyze_market
-from order import check_open_orders, open_trade, update_trade_status
+# main.py
 from telegram import send_message
-from utils import is_new_day, summarize_daily_trades
 
-send_message("บอทเริ่มทำงาน")
+def main():
+    print("เริ่มทำงานบอทเทรด...")
+    send_message("✅ บอทเทรด BTC Futures (OKX) เริ่มทำงานแล้ว")
 
-daily_trade_count = 0
-current_date = time.strftime("%Y-%m-%d")
+    # TODO: ส่วนหลักของบอทเทรด เช่น:
+    # - ดึงข้อมูล OHLC M5
+    # - ตรวจจับ BOS
+    # - วาด Fibonacci
+    # - เปิดออเดอร์ที่ 62% พร้อม SL/TP
+    # - จำกัด 5 ไม้ต่อวัน
+    # - ส่งแจ้งเตือนเมื่อเปิด/ปิดออเดอร์
+    # - สรุปกำไร/ขาดทุนรายวัน
 
-while True:
-    try:
-        if is_new_day(current_date):
-            current_date = time.strftime("%Y-%m-%d")
-            daily_trade_count = 0
-            summarize_daily_trades()
-
-        if check_open_orders():
-            update_trade_status()
-        elif daily_trade_count < 5:
-            signal = analyze_market()
-            if signal:
-                open_trade(signal)
-                daily_trade_count += 1
-
-        time.sleep(15)
-
-    except Exception as e:
-        send_message(f"ERROR: {e}")
-        time.sleep(60)
+if __name__ == "__main__":
+    main()
