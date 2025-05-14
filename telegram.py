@@ -1,20 +1,51 @@
 import requests
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
+sent_flags = {
+    'start': False,
+    'choch_m15': None,
+    'fibo_drawn': None,
+    'zone_alert': False,
+    'error': False
+}
+
 def notify(message):
     try:
         requests.post(
             f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
             json={'chat_id': TELEGRAM_CHAT_ID, 'text': message}
         )
-    except Exception as e:
-        print(f"Telegram error: {e}")
+    except:
+        pass
 
-def trade_notify(direction=None, entry=None, size=None, tp=None, sl=None, result=None, pnl=None, new_cap=None):
-    if direction:
-        notify(f"[ENTRY] {direction.upper()} @ {entry}\nSize: {size}\nTP: {tp}\nSL: {sl}")
-    if result:
-        notify(f"[CLOSE] {result} | PnL: {pnl:.2f} USDT\nCapital: {new_cap:.2f}")
+def alert_start():
+    if not sent_flags['start']:
+        notify("[START] Bot started")
+        sent_flags['start'] = True
 
-def health_check(capital):
-    notify(f"[HEALTH CHECK] BOT ALIVE\nCapital: {capital:.2f} USDT")
+def alert_choch_m15(direction):
+    if sent_flags['choch_m15'] != direction:
+        notify(f"[M15 CHoCH] Detected: {direction.upper()}")
+        sent_flags['choch_m15'] = direction
+
+def alert_fibo_drawn(low, high):
+    key = f"{low}-{high}"
+    if sent_flags['fibo_drawn'] != key:
+        notify(f"[FIBO DRAWN]
+Low = {low}
+High = {high}")
+        sent_flags['fibo_drawn'] = key
+
+def alert_price_in_zone():
+    if not sent_flags['zone_alert']:
+        notify("[ALERT] Price entered Fibo zone - Waiting for M1 CHoCH")
+        sent_flags['zone_alert'] = True
+
+def alert_error(msg):
+    if not sent_flags['error']:
+        notify(f"[ERROR] {msg}")
+        sent_flags['error'] = True
+
+def reset_flags():
+    sent_flags['zone_alert'] = False
+    sent_flags['error'] = False
