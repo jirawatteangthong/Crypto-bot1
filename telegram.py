@@ -6,5 +6,5 @@ def send_message(msg):
     data = {'chat_id': TELEGRAM_CHAT_ID, 'text': msg}
     try:
         requests.post(url, data=data)
-    except:
-        print("Telegram Error")
+     except Exception as e:
+        print("Telegram Error:", e)
