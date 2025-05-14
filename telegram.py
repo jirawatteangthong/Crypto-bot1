@@ -1,10 +1,17 @@
 import requests
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
-def send_message(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
-    requests.post(url, json=payload)
-
 def notify(msg):
-    send_message(msg)
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+    )
+
+def trade_notify(direction=None, entry=None, size=None, tp=None, sl=None, result=None, pnl=None, new_cap=None):
+    if direction:
+        notify(f"[ENTRY] {direction.upper()} @ {entry}\nSize: {size}\nTP: {tp}\nSL: {sl}")
+    if result:
+        notify(f"[CLOSE] {result} | PnL: {pnl:.2f} USDT\nCapital: {new_cap:.2f}")
+
+def daily_summary(capital, trades):
+    notify(f"[DAILY SUMMARY] Trades: {trades} | Capital: {capital:.2f} USDT")
