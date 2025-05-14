@@ -1,5 +1,3 @@
-# main.py
-
 import time
 from config import *
 from strategy import get_fibo_zone
@@ -23,7 +21,7 @@ while True:
             orders_today = 0
             positions = []
 
-        if orders_today < MAX_TRADES_PER_DAY:
+        if orders_today < MAX_TRADES_PER_DAY and len(positions) == 0:
             fibo, trend, status = get_fibo_zone()
             if status == 'ok':
                 signal = check_entry_signal(fibo, trend)
