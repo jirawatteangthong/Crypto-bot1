@@ -1,73 +1,68 @@
-import ccxt
-from config import *
-from telegram import trade_notify
-from utils import fetch_current_price
+from utils import exchange, fetch_current_price
+from config import SYMBOL, ORDER_SIZE
 
-exchange = ccxt.okx({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'password': API_PASSPHRASE,
-    'enableRateLimit': True,
-    'options': {'defaultType': 'swap'}
-})
+open_order = None
 
-def open_trade(signal, capital):
-    side = 'buy' if signal['direction'] == 'long' else 'sell'
-
-    params = {
-        'tpTriggerPx': signal['tp'],
-        'tpOrdPx': signal['tp'],
-        'slTriggerPx': signal['sl'],
-        'slOrdPx': signal['sl']
+def open_position(entry, direction, tp, sl):
+    global open_order
+    side = 'buy' if direction == 'long' else 'sell'
+    order = exchange.create_order(SYMBOL, 'market', side, ORDER_SIZE, None)
+    open_order = {
+        'entry': fetch_current_price(),
+        'direction': direction,
+        'tp': tp,
+        'sl': sl,
+        'active': True
     }
+    return open_order
 
-    order = exchange.create_limit_order(SYMBOL, side, ORDER_SIZE, signal['price'], params)
-    trade_notify(direction=signal['direction'], entry=signal['price'],
-                 size=ORDER_SIZE, tp=signal['tp'], sl=signal['sl'])
-    return capital
+def close_position():
+    global open_order
+    if not open_order or not open_order['active']:
+        return None
 
-def monitor_trades(positions, capital):
-    active_positions = []
-    for pos in positions:
-        try:
-            price_now = fetch_current_price()
-            pnl = (price_now - pos['price']) * ORDER_SIZE * LEVERAGE
-            pnl = pnl if pos['direction'] == 'long' else -pnl
+    price = fetch_current_price()
+    result = None
+    pnl = 0
 
-            tp_half = (pos['tp'] + pos['price']) / 2 if pos['direction'] == 'long' else (pos['price'] + pos['tp']) / 2
-            if not pos.get('sl_moved') and (
-                (pos['direction'] == 'long' and price_now >= tp_half) or
-                (pos['direction'] == 'short' and price_now <= tp_half)
-            ):
-                exchange.create_order(SYMBOL, 'market', 'sell' if pos['direction'] == 'long' else 'buy', 0, None, {
-                    'slTriggerPx': pos['price'],
-                    'slOrdPx': pos['price']
-                })
-                pos['sl_moved'] = True
+    if open_order['direction'] == 'long':
+        if price >= open_order['tp']:
+            result = 'TP'
+        elif price <= open_order['sl']:
+            result = 'SL'
+    elif open_order['direction'] == 'short':
+        if price <= open_order['tp']:
+            result = 'TP'
+        elif price >= open_order['sl']:
+            result = 'SL'
 
-            orders = exchange.fetch_open_orders(SYMBOL)
-            filled = all(abs(o['price'] - pos['price']) > 1e-5 for o in orders)
-            if filled:
-                capital += pnl
-                result = "WIN" if pnl > 0 else "LOSS"
-                trade_notify(result=result, pnl=pnl, new_cap=capital)
-            else:
-                active_positions.append(pos)
-        except:
-            continue
-    return active_positions, capital
+    if result:
+        entry = open_order['entry']
+        exit_price = open_order['tp'] if result == 'TP' else open_order['sl']
+        pnl = (exit_price - entry) * ORDER_SIZE if open_order['direction'] == 'long' else (entry - exit_price) * ORDER_SIZE
+        open_order['active'] = False
+        return result, pnl
 
-def get_open_positions():
-    try:
-        orders = exchange.fetch_open_orders(SYMBOL)
-        positions = []
-        for o in orders:
-            positions.append({
-                'direction': 'long' if o['side'] == 'buy' else 'short',
-                'price': float(o['price']),
-                'size': float(o['amount']),
-                'level': o['info'].get('tag', 'manual')
-            })
-        return positions
-    except:
-        return []
+    return None
+
+def check_and_update_sl():
+    global open_order
+    if not open_order or not open_order['active']:
+        return False
+
+    current_price = fetch_current_price()
+    entry = open_order['entry']
+    tp = open_order['tp']
+    sl = open_order['sl']
+    direction = open_order['direction']
+
+    # ราคาถึงครึ่งทาง TP หรือยัง
+    mid_tp = (entry + tp) / 2
+    if direction == 'long' and current_price >= mid_tp and sl != entry:
+        open_order['sl'] = entry
+        return True
+    elif direction == 'short' and current_price <= mid_tp and sl != entry:
+        open_order['sl'] = entry
+        return True
+
+    return False
