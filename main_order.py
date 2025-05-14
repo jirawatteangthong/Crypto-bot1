@@ -1,35 +1,42 @@
 import time
-from config import *
 from strategy import get_fibo_zone
 from entry import check_entry_signal
-from telegram import notify, trade_notify, health_check
-from utils import is_new_day
+from telegram import alert_start, alert_error, reset_flags
+from utils import exchange, SYMBOL
 
-capital = START_CAPITAL
-last_health_check = 0
-
-notify("[BOT STARTED] Trading bot is now running.")
-
-while True:
+def place_order(direction, size, tp, sl):
+    side = 'buy' if direction == 'long' else 'sell'
     try:
-        fibo, trend, status = get_fibo_zone()
+        exchange.set_leverage(LEVERAGE, SYMBOL)
+        order = exchange.create_market_order(SYMBOL, side, size)
+        reduce_side = 'sell' if side == 'buy' else 'buy'
+        exchange.create_order(SYMBOL, 'take_profit_market', reduce_side, size, None, {
+            'triggerPrice': tp,
+            'closePosition': True
+        })
+        exchange.create_order(SYMBOL, 'stop_market', reduce_side, size, None, {
+            'triggerPrice': sl,
+            'closePosition': True
+        })
+    except Exception as e:
+        alert_error(str(e))
 
-        if status == 'ok':
-            entry = check_entry_signal(fibo)
-            if entry:
-                trade_notify(direction=entry['direction'], entry=entry['entry'], size=ORDER_SIZE, tp=entry['tp'], sl=entry['sl'])
-                # simulate close
-                result = 'WIN'  # or 'LOSS' based on TP/SL hit
-                pnl = 5.0 if result == 'WIN' else -3.0
-                capital += pnl
-                trade_notify(result=result, pnl=pnl, new_cap=capital)
-
-        if time.time() - last_health_check > HEALTH_CHECK_HOURS * 3600:
-            health_check(capital)
-            last_health_check = time.time()
-
+def run():
+    alert_start()
+    fibo = None
+    while True:
+        try:
+            if not fibo:
+                fibo = get_fibo_zone()
+                reset_flags()
+            if fibo:
+                signal = check_entry_signal(fibo)
+                if signal:
+                    place_order(signal['direction'], signal['size'], signal['tp'], signal['sl'])
+                    fibo = None  # à¸£à¸­à¸§à¸²à¸à¸£à¸­à¸à¹à¸«à¸¡à¹à¸«à¸¥à¸±à¸à¹à¸à¹à¸²à¹à¸à¸£à¸
+        except Exception as e:
+            alert_error(str(e))
         time.sleep(CHECK_INTERVAL)
 
-    except Exception as e:
-        notify(f"[ERROR] {e}")
-        time.sleep(60)
+if __name__ == '__main__':
+    run()
