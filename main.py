@@ -1,43 +1,39 @@
 import time
-from config import *
-from strategy import get_fibo_zone
-from entry import check_entry_signal
-from order import open_trade, monitor_trades, get_open_positions
-from telegram import notify, health_check
-from utils import is_new_day
+from config import MAX_TRADES_PER_DAY
+from telegram import send_message
+from strategy import detect_bos_and_fibo
+from entry import check_fibo_entry
+from order import open_trade, close_trade, get_open_trade
+from utils import get_today, sleep_until_next_candle
 
-capital = START_CAPITAL
-positions = get_open_positions()
-orders_today = 0
-last_health = time.time()
+def main():
+    send_message("[BOT STARTED] เริ่มทำงานแล้ว")
+    trades_today = 0
+    trade_date = get_today()
 
-notify("[BOT STARTED] เริ่มทำงานแล้ว")
-for p in positions:
-    notify(f"[RESTORE] ค้างอยู่: {p['direction']} @ {p['price']}")
+    while True:
+        sleep_until_next_candle()
 
-while True:
-    try:
-        if is_new_day():
-            orders_today = 0
-            positions = []
+        if get_today() != trade_date:
+            trades_today = 0
+            trade_date = get_today()
 
-        if orders_today < MAX_TRADES_PER_DAY and len(positions) == 0:
-            fibo, trend, status = get_fibo_zone()
-            if status == 'ok':
-                signal = check_entry_signal(fibo, trend)
-                if signal:
-                    capital = open_trade(signal, capital)
-                    positions.append(signal)
-                    orders_today += 1
+        if trades_today >= MAX_TRADES_PER_DAY:
+            continue
 
-        positions, capital = monitor_trades(positions, capital)
+        if get_open_trade():
+            continue
 
-        if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
-            health_check(capital)
-            last_health = time.time()
+        fibo = detect_bos_and_fibo()
+        if not fibo:
+            continue
 
-        time.sleep(CHECK_INTERVAL)
+        signal = check_fibo_entry(fibo)
+        if signal:
+            open_trade(signal)
+            trades_today += 1
 
-    except Exception as e:
-        notify(f"[ERROR] {str(e)}")
-        time.sleep(60)
+        close_trade()
+
+if __name__ == "__main__":
+    main()
