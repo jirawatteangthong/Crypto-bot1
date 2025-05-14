@@ -1,52 +1,36 @@
 import time
 from config import *
 from strategy import get_fibo_zone
-from entry import check_entry_signals
+from entry import check_entry_signal
 from order import open_trade, monitor_trades, get_open_positions
 from telegram import notify, health_check
 from utils import is_new_day
 
 capital = START_CAPITAL
 last_health = time.time()
-orders_today = 0
 positions = []
-notified_no_trade = False
-notified_skip_trade = False
+has_traded_today = False
 
-notify("[BOT STARTED] ระบบเริ่มทำงานแล้ว")
-
-# ตรวจสอบออเดอร์ค้างเมื่อเริ่มระบบ
+notify("[BOT STARTED] ✅บอทเริ่มทำงานแล้ว💰")
 positions = get_open_positions()
-if positions:
-    for p in positions:
-        notify(f"[RESTORE] ยังมี position ค้างอยู่: {p['direction'].upper()} @ {p['price']} | Size: {p['size']}")
-else:
-    notify("[RESTORE] ไม่มีออเดอร์ค้างจากระบบก่อนหน้า")
 
 while True:
     try:
         if is_new_day():
-            orders_today = 0
             positions = []
-            notified_no_trade = False
-            notified_skip_trade = False
+            has_traded_today = False
 
-        if orders_today < 2:
-            fibo, trend_h1, status = get_fibo_zone()
-            if fibo:
-                signals = check_entry_signals(fibo, trend_h1)
-                for sig in signals:
-                    if orders_today >= 2:
-                        break
-                    if sig['level'] not in [p['level'] for p in positions]:
-                        capital = open_trade(sig, capital)
-                        positions.append(sig)
-                        orders_today += 1
+        if not has_traded_today:
+            fibo, trend, status = get_fibo_zone()
+            if status == 'ok':
+                signal = check_entry_signal(fibo)
+                if signal:
+                    capital = open_trade(signal, capital)
+                    positions.append(signal)
+                    has_traded_today = True
 
-        # ตรวจสอบว่าออเดอร์ถูกปิดหรือยัง
         positions, capital = monitor_trades(positions, capital)
 
-        # Health check ทุก 6 ชั่วโมง
         if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
             health_check(capital)
             last_health = time.time()
