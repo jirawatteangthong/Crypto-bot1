@@ -1,8 +1,6 @@
 import requests
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
-sent_start_alert = False
-
 sent_flags = {
     'start': False,
     'choch_m15': None,
@@ -20,13 +18,10 @@ def notify(message):
     except:
         pass
 
-sent_start_alert = False
-
 def alert_start():
-    global sent_start_alert
-    if not sent_start_alert:
-        send_telegram("✅ บอทเริ่มทำงานแล้ว")
-        sent_start_alert = True
+    if not sent_flags['start']:
+        notify("[START] Bot started")
+        sent_flags['start'] = True
 
 def alert_choch_m15(direction):
     if sent_flags['choch_m15'] != direction:
