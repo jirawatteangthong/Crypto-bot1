@@ -1,43 +1,31 @@
 import time
-from config import *
-from strategy import get_fibo_zone
-from entry import check_entry_signal
-from order import open_trade, monitor_trades, get_open_positions
-from telegram import notify, health_check
-from utils import is_new_day
+from strategy import analyze_market
+from order import check_open_orders, open_trade, update_trade_status
+from telegram import send_message
+from utils import is_new_day, summarize_daily_trades
 
-capital = START_CAPITAL
-positions = get_open_positions()
-orders_today = 0
-last_health = time.time()
+send_message("บอทเริ่มทำงาน")
 
-notify("[BOT STARTED] เริ่มทำงานแล้ว")
-for p in positions:
-    notify(f"[RESTORE] ค้างอยู่: {p['direction']} @ {p['price']}")
+daily_trade_count = 0
+current_date = time.strftime("%Y-%m-%d")
 
 while True:
     try:
-        if is_new_day():
-            orders_today = 0
-            positions = []
+        if is_new_day(current_date):
+            current_date = time.strftime("%Y-%m-%d")
+            daily_trade_count = 0
+            summarize_daily_trades()
 
-        if orders_today < 1:
-            fibo, trend_h1, status = get_fibo_zone()
-            if status == 'ok':
-                signal = check_entry_signal(fibo, trend_h1)
-                if signal:
-                    capital = open_trade(signal, capital)
-                    positions.append(signal)
-                    orders_today += 1
+        if check_open_orders():
+            update_trade_status()
+        elif daily_trade_count < 5:
+            signal = analyze_market()
+            if signal:
+                open_trade(signal)
+                daily_trade_count += 1
 
-        positions, capital = monitor_trades(positions, capital)
-
-        if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
-            health_check(capital)
-            last_health = time.time()
-
-        time.sleep(CHECK_INTERVAL)
+        time.sleep(15)
 
     except Exception as e:
-        notify(f"[ERROR] {str(e)}")
+        send_message(f"ERROR: {e}")
         time.sleep(60)
