@@ -11,7 +11,8 @@ exchange = ccxt.okx({
 })
 
 def fetch_current_price():
-    return exchange.fetch_ticker(SYMBOL)['last']
+    ticker = exchange.fetch_ticker(SYMBOL)
+    return ticker['last']
 
 def fetch_ohlcv(tf):
     return exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=200)
