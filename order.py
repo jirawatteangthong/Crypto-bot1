@@ -14,11 +14,9 @@ exchange = ccxt.okx({
 def open_trade(signal, capital):
     side = 'buy' if signal['direction'] == 'long' else 'sell'
 
-    # คำนวณ TP/SL ที่ Fibo 10 และ 110/120
     tp_price = signal['tp']
     sl_price = signal['sl']
 
-    # เปิดออเดอร์พร้อม TP/SL ด้วย OCO
     params = {
         'tpTriggerPx': tp_price,
         'tpOrdPx': tp_price,
