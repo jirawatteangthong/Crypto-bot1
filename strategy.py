@@ -1,50 +1,75 @@
-from utils import fetch_ohlcv, detect_bos, detect_choch
+from utils import exchange
 from telegram import alert_choch_m15, alert_fibo_drawn
 
-last_fibo = {'high': None, 'low': None, 'direction': None}
+def fetch_ohlcv(tf, limit):
+    return exchange.fetch_ohlcv('BTC-USDT-SWAP', timeframe=tf, limit=limit)
+
+def detect_choch(candles):
+    highs = [x[2] for x in candles]
+    lows = [x[3] for x in candles]
+    close = candles[-1][4]
+    prev_close = candles[-2][4]
+
+    if prev_close < max(highs[:-1]) and close > max(highs[:-1]):
+        return 'bullish'
+    elif prev_close > min(lows[:-1]) and close < min(lows[:-1]):
+        return 'bearish'
+    return None
+
+def detect_bos(candles):
+    highs = [x[2] for x in candles]
+    lows = [x[3] for x in candles]
+    close = candles[-1][4]
+
+    if close > max(highs[:-1]):
+        return 'bullish'
+    elif close < min(lows[:-1]):
+        return 'bearish'
+    return None
 
 def get_fibo_zone():
-    h1 = fetch_ohlcv('1h')[-200:]
-    m15 = fetch_ohlcv('15m')[-70:]
+    h1 = fetch_ohlcv('1h', 100)
+    m15 = fetch_ohlcv('15m', 70)
 
     trend = detect_bos(h1)
-    choch = detect_choch(m15)
-    if not trend or not choch or choch != trend:
+    choch_m15 = detect_choch(m15)
+
+    if not trend or choch_m15 == trend or choch_m15 is None:
         return None
 
-    highs = [c[2] for c in h1[-70:]]
-    lows = [c[3] for c in h1[-70:]]
-    high = max(highs)
-    low = min(lows)
+    alert_choch_m15()
 
-    alert_choch_m15(choch)
-    alert_fibo_drawn(low, high)
+    highs = [x[2] for x in h1[-20:]]
+    lows = [x[3] for x in h1[-20:]]
 
     if trend == 'bullish':
-        fibo = {
-            'direction': 'long',
-            'levels': {
-                '61.8': low + 0.618 * (high - low),
-                '78.6': low + 0.786 * (high - low),
-                '33.3': low + 0.333 * (high - low)
-            },
-            'tp': high - 10,
-            'sl': low - 10,
+        low = min(lows)
+        high = max(highs)
+        fibo_10 = low + (high - low) * 0.1
+        fibo_110 = low + (high - low) * 1.1
+        alert_fibo_drawn(low, high)
+        return {
+            'trend': 'long',
+            'entry_zone': (low + (high - low) * 0.618, low + (high - low) * 0.786),
+            'tp': fibo_10,
+            'sl': fibo_110,
             'low': low,
             'high': high
         }
-    else:
-        fibo = {
-            'direction': 'short',
-            'levels': {
-                '61.8': high - 0.618 * (high - low),
-                '78.6': high - 0.786 * (high - low),
-                '33.3': high - 0.333 * (high - low)
-            },
-            'tp': low + 10,
-            'sl': high + 10,
+
+    elif trend == 'bearish':
+        high = max(highs)
+        low = min(lows)
+        fibo_10 = high - (high - low) * 0.1
+        fibo_110 = high - (high - low) * 1.1
+        alert_fibo_drawn(high, low)
+        return {
+            'trend': 'short',
+            'entry_zone': (high - (high - low) * 0.786, high - (high - low) * 0.618),
+            'tp': fibo_10,
+            'sl': fibo_110,
             'low': high,
             'high': low
         }
 
-    return fibo
+    return None
