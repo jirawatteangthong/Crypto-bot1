@@ -11,8 +11,7 @@ exchange = ccxt.okx({
 })
 
 def fetch_current_price():
-    ticker = exchange.fetch_ticker(SYMBOL)
-    return ticker['last']
+    return exchange.fetch_ticker(SYMBOL)['last']
 
 def fetch_ohlcv(tf):
     return exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=200)
@@ -21,15 +20,9 @@ def detect_bos(candles):
     highs = [c[2] for c in candles]
     lows = [c[3] for c in candles]
     closes = [c[4] for c in candles]
-
-    recent_high = max(highs[-10:])
-    recent_low = min(lows[-10:])
-    prev_high = max(highs[-20:-10])
-    prev_low = min(lows[-20:-10])
-
-    if closes[-1] > prev_high:
+    if closes[-1] > max(highs[-20:-10]):
         return 'bullish'
-    elif closes[-1] < prev_low:
+    elif closes[-1] < min(lows[-20:-10]):
         return 'bearish'
     return None
 
@@ -37,16 +30,11 @@ def detect_choch(candles):
     highs = [c[2] for c in candles]
     lows = [c[3] for c in candles]
     closes = [c[4] for c in candles]
-
-    if closes[-1] > max(highs[-20:-10]) and closes[-2] < max(highs[-20:-10]):
+    if closes[-2] < max(highs[-20:-10]) and closes[-1] > max(highs[-20:-10]):
         return 'bullish'
-    elif closes[-1] < min(lows[-20:-10]) and closes[-2] > min(lows[-20:-10]):
+    elif closes[-2] > min(lows[-20:-10]) and closes[-1] < min(lows[-20:-10]):
         return 'bearish'
     return None
 
 def is_new_day():
     return datetime.datetime.utcnow().hour == 0
-
-def check_open_positions():
-    # Check for any open positions and handle them (if any)
-    pass
