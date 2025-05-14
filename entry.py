@@ -1,22 +1,17 @@
-from utils import fetch_current_price, fetch_ohlcv, detect_choch
+from utils import exchange
+from strategy import fetch_ohlcv, detect_choch
 from telegram import alert_price_in_zone
+from config import ORDER_SIZE
 
-def check_entry_signal(fibo):
-    price = fetch_current_price()
-    in_zone = fibo['levels']['61.8'] <= price <= fibo['levels']['78.6'] if fibo['direction'] == 'long' else fibo['levels']['78.6'] <= price <= fibo['levels']['61.8']
-    if not in_zone:
-        return None
-
-    alert_price_in_zone()
-
-    m1 = fetch_ohlcv('1m')[-50:]
-    m1_choch = detect_choch(m1)
-    if (fibo['direction'] == 'long' and m1_choch == 'bullish') or (fibo['direction'] == 'short' and m1_choch == 'bearish'):
-        return {
-            'direction': fibo['direction'],
-            'price': price,
-            'tp': fibo['tp'],
-            'sl': fibo['sl'],
-            'size': 0.7
-        }
+def check_entry_signal(fibo_data):
+    price = exchange.fetch_ticker('BTC-USDT-SWAP')['last']
+    lower, upper = fibo_data['entry_zone']
+    if lower <= price <= upper:
+        alert_price_in_zone()
+        m1 = fetch_ohlcv('1m', 30)
+        choch = detect_choch(m1)
+        if fibo_data['trend'] == 'long' and choch == 'bullish':
+            return {'direction': 'long', 'size': ORDER_SIZE, 'tp': fibo_data['tp'], 'sl': fibo_data['sl']}
+        elif fibo_data['trend'] == 'short' and choch == 'bearish':
+            return {'direction': 'short', 'size': ORDER_SIZE, 'tp': fibo_data['tp'], 'sl': fibo_data['sl']}
     return None
