@@ -1,5 +1,3 @@
-# okx_api.py
-import ccxt
 from config import API_KEY, API_SECRET, API_PASSPHRASE
 
 def connect_okx():
