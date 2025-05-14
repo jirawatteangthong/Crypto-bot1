@@ -1,39 +1,41 @@
 import time
 from config import *
-from strategy import detect_bos_and_swing
-from fibonacci import calculate_fibonacci_levels
-from order import open_trade, monitor_trades
-from telegram import notify, trade_notify, daily_summary
-from utils import get_current_timeframe_data, is_new_day
+from strategy import get_fibo_zone
+from entry import check_entry_signal
+from order import open_trade, monitor_trades, get_open_positions
+from telegram import notify, health_check
+from utils import is_new_day
 
-trades_today = 0
-positions = []
 capital = START_CAPITAL
+positions = get_open_positions()
+orders_today = 0
+last_health = time.time()
 
 notify("[BOT STARTED] เริ่มทำงานแล้ว")
+for p in positions:
+    notify(f"[RESTORE] ค้างอยู่: {p['direction']} @ {p['price']}")
 
 while True:
     try:
         if is_new_day():
-            daily_summary(capital, trades_today)
-            trades_today = 0
+            orders_today = 0
             positions = []
 
-        if trades_today >= MAX_TRADES_PER_DAY or positions:
-            positions = monitor_trades(positions, capital)
-            time.sleep(CHECK_INTERVAL)
-            continue
+        if orders_today < 1:
+            fibo, trend_h1, status = get_fibo_zone()
+            if status == 'ok':
+                signal = check_entry_signal(fibo, trend_h1)
+                if signal:
+                    capital = open_trade(signal, capital)
+                    positions.append(signal)
+                    orders_today += 1
 
-        candles = get_current_timeframe_data(TIMEFRAME)
-        trend, swing = detect_bos_and_swing(candles)
+        positions, capital = monitor_trades(positions, capital)
 
-        if trend and swing:
-            fibo = calculate_fibonacci_levels(swing, trend)
-            capital = open_trade(fibo, capital)
-            positions.append(fibo)
-            trades_today += 1
+        if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
+            health_check(capital)
+            last_health = time.time()
 
-        positions = monitor_trades(positions, capital)
         time.sleep(CHECK_INTERVAL)
 
     except Exception as e:
