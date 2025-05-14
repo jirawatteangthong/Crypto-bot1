@@ -1,75 +1,69 @@
-from utils import exchange
-from telegram import alert_choch_m15, alert_fibo_drawn
+from utils import fetch_ohlcv, detect_bos, detect_choch
 
-def fetch_ohlcv(tf, limit):
-    return exchange.fetch_ohlcv('BTC-USDT-SWAP', timeframe=tf, limit=limit)
-
-def detect_choch(candles):
-    highs = [x[2] for x in candles]
-    lows = [x[3] for x in candles]
-    close = candles[-1][4]
-    prev_close = candles[-2][4]
-
-    if prev_close < max(highs[:-1]) and close > max(highs[:-1]):
-        return 'bullish'
-    elif prev_close > min(lows[:-1]) and close < min(lows[:-1]):
-        return 'bearish'
-    return None
-
-def detect_bos(candles):
-    highs = [x[2] for x in candles]
-    lows = [x[3] for x in candles]
-    close = candles[-1][4]
-
-    if close > max(highs[:-1]):
-        return 'bullish'
-    elif close < min(lows[:-1]):
-        return 'bearish'
-    return None
+prev_fibo = None
 
 def get_fibo_zone():
-    h1 = fetch_ohlcv('1h', 100)
-    m15 = fetch_ohlcv('15m', 70)
+    global prev_fibo
+
+    h1 = fetch_ohlcv('1h')[-200:]
+    m15 = fetch_ohlcv('15m')[-100:]
 
     trend = detect_bos(h1)
     choch_m15 = detect_choch(m15)
 
-    if not trend or choch_m15 == trend or choch_m15 is None:
-        return None
+    if not trend or not choch_m15 or trend != choch_m15:
+        return None, trend, 'wait'
 
-    alert_choch_m15()
-
-    highs = [x[2] for x in h1[-20:]]
-    lows = [x[3] for x in h1[-20:]]
+    highs = [c[2] for c in h1[-70:]]
+    lows = [c[3] for c in h1[-70:]]
+    new_high = max(highs)
+    new_low = min(lows)
 
     if trend == 'bullish':
-        low = min(lows)
-        high = max(highs)
-        fibo_10 = low + (high - low) * 0.1
-        fibo_110 = low + (high - low) * 1.1
-        alert_fibo_drawn(low, high)
-        return {
-            'trend': 'long',
-            'entry_zone': (low + (high - low) * 0.618, low + (high - low) * 0.786),
-            'tp': fibo_10,
-            'sl': fibo_110,
-            'low': low,
-            'high': high
+        if prev_fibo:
+            retrace = (fetch_current_price() - prev_fibo['levels']['100']) / (prev_fibo['levels']['0'] - prev_fibo['levels']['100'])
+            if retrace < 0.333:
+                prev_fibo['levels']['0'] = new_high
+                prev_fibo['tp'] = new_high - 0.1 * (new_high - prev_fibo['levels']['100'])
+                prev_fibo['sl'] = prev_fibo['levels']['100'] - 0.1 * (new_high - prev_fibo['levels']['100'])
+                return prev_fibo, trend, 'ok'
+            else:
+                prev_fibo['levels']['100'] = new_low
+
+        fibo = {
+            'direction': 'long',
+            'levels': {
+                '61.8': new_low + 0.618 * (new_high - new_low),
+                '78.6': new_low + 0.786 * (new_high - new_low),
+                '0': new_high,
+                '100': new_low
+            },
+            'tp': new_high - 0.1 * (new_high - new_low),
+            'sl': new_low - 0.1 * (new_high - new_low)
         }
 
-    elif trend == 'bearish':
-        high = max(highs)
-        low = min(lows)
-        fibo_10 = high - (high - low) * 0.1
-        fibo_110 = high - (high - low) * 1.1
-        alert_fibo_drawn(high, low)
-        return {
-            'trend': 'short',
-            'entry_zone': (high - (high - low) * 0.786, high - (high - low) * 0.618),
-            'tp': fibo_10,
-            'sl': fibo_110,
-            'low': high,
-            'high': low
+    else:
+        if prev_fibo:
+            retrace = (prev_fibo['levels']['100'] - fetch_current_price()) / (prev_fibo['levels']['100'] - prev_fibo['levels']['0'])
+            if retrace < 0.333:
+                prev_fibo['levels']['0'] = new_low
+                prev_fibo['tp'] = new_low + 0.1 * (prev_fibo['levels']['100'] - new_low)
+                prev_fibo['sl'] = prev_fibo['levels']['100'] + 0.1 * (prev_fibo['levels']['100'] - new_low)
+                return prev_fibo, trend, 'ok'
+            else:
+                prev_fibo['levels']['100'] = new_high
+
+        fibo = {
+            'direction': 'short',
+            'levels': {
+                '61.8': new_high - 0.618 * (new_high - new_low),
+                '78.6': new_high - 0.786 * (new_high - new_low),
+                '0': new_low,
+                '100': new_high
+            },
+            'tp': new_low + 0.1 * (new_high - new_low),
+            'sl': new_high + 0.1 * (new_high - new_low)
         }
 
-    return None
+    prev_fibo = fibo
+    return fibo, trend, 'ok'
