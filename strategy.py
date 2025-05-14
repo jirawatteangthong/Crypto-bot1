@@ -1,30 +1,32 @@
-from utils import fetch_ohlcv, detect_bos, fetch_current_price
+from utils import fetch_ohlcv
 
-prev_fibo = None
+def detect_bos_and_fibo():
+    candles = fetch_ohlcv('5m', limit=100)
+    high = max(c['high'] for c in candles[-20:])
+    low = min(c['low'] for c in candles[-20:])
 
-def get_fibo_zone():
-    global prev_fibo
-
-    m5 = fetch_ohlcv('5m')[-50:]
-    trend = detect_bos(m5)
-    if not trend:
-        return None, None, 'wait'
-
-    highs = [c[2] for c in m5[-20:]]
-    lows = [c[3] for c in m5[-20:]]
-    high = max(highs)
-    low = min(lows)
-
-    price = fetch_current_price()
-    if trend == 'bullish':
-        entry = low + 0.62 * (high - low)
-        sl = high + 0.1 * (high - low)
-        tp = entry + (sl - entry)
-        fibo = {'direction': 'long', 'price': entry, 'tp': tp, 'sl': sl}
+    if candles[-1]['close'] > high:
+        direction = 'long'
+    elif candles[-1]['close'] < low:
+        direction = 'short'
     else:
-        entry = high - 0.62 * (high - low)
-        sl = low - 0.1 * (high - low)
-        tp = entry - (entry - sl)
-        fibo = {'direction': 'short', 'price': entry, 'tp': tp, 'sl': sl}
+        return None
 
-    return fibo, trend, 'ok'
+    swing_high = high
+    swing_low = low
+
+    if direction == 'long':
+        entry = swing_low + 0.62 * (swing_high - swing_low)
+        sl = swing_low - 0.1 * (swing_high - swing_low)
+        tp = entry + (entry - sl)
+    else:
+        entry = swing_high - 0.62 * (swing_high - swing_low)
+        sl = swing_high + 0.1 * (swing_high - swing_low)
+        tp = entry - (sl - entry)
+
+    return {
+        'direction': direction,
+        'entry': entry,
+        'tp': tp,
+        'sl': sl
+    }
