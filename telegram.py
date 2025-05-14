@@ -1,5 +1,24 @@
 import requests
+
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+
+# Flags to ensure one-time notifications
+notified_flags = {
+    'bot_started': False,
+    'choch_m15': False,
+    'draw_fibo': False,
+    'enter_zone': False,
+    'error': False
+}
+
+def reset_flags():
+    for key in notified_flags:
+        notified_flags[key] = False
+
+def notify_once(tag, message):
+    if not notified_flags.get(tag):
+        notify(message)
+        notified_flags[tag] = True
 
 def notify(message):
     requests.post(
