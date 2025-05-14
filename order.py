@@ -1,5 +1,3 @@
-# order.py
-from config import ORDER_SIZE, SYMBOL
 from telegram import send_message
 
 current_order = None
