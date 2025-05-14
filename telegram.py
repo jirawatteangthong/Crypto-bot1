@@ -1,5 +1,3 @@
-# telegram.py
-
 import requests
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
