@@ -1,51 +1,42 @@
 import requests
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
-sent_flags = {
-    'start': False,
-    'choch_m15': None,
-    'fibo_drawn': None,
-    'zone_alert': False,
-    'error': False
+flags = {
+    'choch_alerted': False,
+    'zone_alerted': False,
+    'fibo_alerted': False,
+    'started': False
 }
 
-def notify(message):
-    try:
-        requests.post(
-            f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
-            json={'chat_id': TELEGRAM_CHAT_ID, 'text': message}
-        )
-    except:
-        pass
+def send_telegram_message(text):
+    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+    data = {'chat_id': TELEGRAM_CHAT_ID, 'text': text}
+    requests.post(url, data=data)
 
 def alert_start():
-    if not sent_flags['start']:
-        notify("[START] Bot started")
-        sent_flags['start'] = True
+    if not flags['started']:
+        send_telegram_message('บอทเริ่มทำงานแล้ว')
+        flags['started'] = True
 
-def alert_choch_m15(direction):
-    if sent_flags['choch_m15'] != direction:
-        notify(f"[M15 CHoCH] Detected: {direction.upper()}")
-        sent_flags['choch_m15'] = direction
+def alert_choch_m15():
+    if not flags['choch_alerted']:
+        send_telegram_message('[CHoCH] เกิด CHoCH ใน M15')
+        flags['choch_alerted'] = True
 
 def alert_fibo_drawn(low, high):
-    key = f"{low}-{high}"
-    if sent_flags['fibo_drawn'] != key:
-        notify(f"[FIBO DRAWN]
-Low = {low}
-High = {high}")
-        sent_flags['fibo_drawn'] = key
+    if not flags['fibo_alerted']:
+        send_telegram_message(f'[FIBO] วาด Fibonacci ใหม่: Low={low}, High={high}')
+        flags['fibo_alerted'] = True
 
 def alert_price_in_zone():
-    if not sent_flags['zone_alert']:
-        notify("[ALERT] Price entered Fibo zone - Waiting for M1 CHoCH")
-        sent_flags['zone_alert'] = True
+    if not flags['zone_alerted']:
+        send_telegram_message('[ZONE] ราคาเข้าโซน Fibonacci แล้ว รอ CHoCH ใน M1')
+        flags['zone_alerted'] = True
 
-def alert_error(msg):
-    if not sent_flags['error']:
-        notify(f"[ERROR] {msg}")
-        sent_flags['error'] = True
+def alert_error(e):
+    send_telegram_message(f'[ERROR] {e}')
 
 def reset_flags():
-    sent_flags['zone_alert'] = False
-    sent_flags['error'] = False
+    flags['choch_alerted'] = False
+    flags['zone_alerted'] = False
+    flags['fibo_alerted'] = False
