@@ -1,39 +1,41 @@
 import time
-from config import MAX_TRADES_PER_DAY
-from telegram import send_message
-from strategy import detect_bos_and_fibo
-from entry import check_fibo_entry
-from order import open_trade, close_trade, get_open_trade
-from utils import get_today, sleep_until_next_candle
+from config import *
+from strategy import detect_bos_and_swing
+from fibonacci import calculate_fibonacci_levels
+from order import open_trade, monitor_trades
+from telegram import notify, trade_notify, daily_summary
+from utils import get_current_timeframe_data, is_new_day
 
-def main():
-    send_message("[BOT STARTED] เริ่มทำงานแล้ว")
-    trades_today = 0
-    trade_date = get_today()
+trades_today = 0
+positions = []
+capital = START_CAPITAL
 
-    while True:
-        sleep_until_next_candle()
+notify("[BOT STARTED] เริ่มทำงานแล้ว")
 
-        if get_today() != trade_date:
+while True:
+    try:
+        if is_new_day():
+            daily_summary(capital, trades_today)
             trades_today = 0
-            trade_date = get_today()
+            positions = []
 
-        if trades_today >= MAX_TRADES_PER_DAY:
+        if trades_today >= MAX_TRADES_PER_DAY or positions:
+            positions = monitor_trades(positions, capital)
+            time.sleep(CHECK_INTERVAL)
             continue
 
-        if get_open_trade():
-            continue
+        candles = get_current_timeframe_data(TIMEFRAME)
+        trend, swing = detect_bos_and_swing(candles)
 
-        fibo = detect_bos_and_fibo()
-        if not fibo:
-            continue
-
-        signal = check_fibo_entry(fibo)
-        if signal:
-            open_trade(signal)
+        if trend and swing:
+            fibo = calculate_fibonacci_levels(swing, trend)
+            capital = open_trade(fibo, capital)
+            positions.append(fibo)
             trades_today += 1
 
-        close_trade()
+        positions = monitor_trades(positions, capital)
+        time.sleep(CHECK_INTERVAL)
 
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        notify(f"[ERROR] {str(e)}")
+        time.sleep(60)
