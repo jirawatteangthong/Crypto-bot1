@@ -1,30 +1,31 @@
-from okx_api import place_order, get_open_orders, cancel_all_orders
+# order.py
+from config import ORDER_SIZE, SYMBOL
 from telegram import send_message
 
-active_trade = None
+current_order = None
 
-def check_open_orders():
-    global active_trade
-    return active_trade is not None
+def open_trade(exchange, direction, entry_price, sl_price, tp_price):
+    global current_order
+    if current_order:
+        return
 
-def open_trade(signal):
-    global active_trade
-    side = 'buy' if signal['side'] == 'buy' else 'sell'
-    result = place_order(
-        side=side,
-        price=signal['entry'],
-        sl=signal['sl'],
-        tp=signal['tp']
-    )
-    if result:
-        active_trade = result
-        send_message(f"เปิดออเดอร์ {side.upper()} ที่ {signal['entry']}, TP: {signal['tp']}, SL: {signal['sl']}")
+    side = 'buy' if direction == 'long' else 'sell'
 
-def update_trade_status():
-    global active_trade
-    order_status = get_open_orders()
-    if not order_status:
-        # สมมุติว่าปิดแล้ว
-        pnl = active_trade.get("pnl", 0)
-        send_message(f"ปิดออเดอร์ กำไร/ขาดทุน: {pnl} USDT")
-        active_trade = None
+    params = {
+        'stopLoss': {'price': sl_price},
+        'takeProfit': {'price': tp_price}
+    }
+
+    order = exchange.create_market_order(SYMBOL, side, ORDER_SIZE, params=params)
+    current_order = order
+
+    send_message(f"เปิดออเดอร์ {direction.upper()} ที่ {entry_price}\nSL: {sl_price}, TP: {tp_price}")
+
+def close_trade(exchange):
+    global current_order
+    if not current_order:
+        return
+
+    exchange.cancel_order(current_order['id'], SYMBOL)
+    send_message("ปิดออเดอร์")
+    current_order = None
