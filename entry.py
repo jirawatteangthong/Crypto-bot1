@@ -1,26 +1,16 @@
 from utils import fetch_current_price, fetch_ohlcv, detect_choch
+from telegram import notify
 
-def check_entry_signal(fibo, trend_h1):
+def check_entry_signal(fibo):
     price = fetch_current_price()
-    m1 = fetch_ohlcv('1m')[-100:]
-    choch_m1 = detect_choch(m1)
-
-    if trend_h1 == 'bullish' and fibo['levels']['61.8'] <= price <= fibo['levels']['78.6']:
-        if choch_m1 == 'bullish':
-            return {
-                'direction': 'long',
-                'price': price,
-                'tp': fibo['tp'],
-                'sl': fibo['sl'],
-                'level': 'zone'
-            }
-    elif trend_h1 == 'short' and fibo['levels']['78.6'] <= price <= fibo['levels']['61.8']:
-        if choch_m1 == 'bearish':
-            return {
-                'direction': 'short',
-                'price': price,
-                'tp': fibo['tp'],
-                'sl': fibo['sl'],
-                'level': 'zone'
-            }
+    if fibo['direction'] == 'long' and fibo['levels']['61.8'] <= price <= fibo['levels']['78.6']:
+        candles_m1 = fetch_ohlcv('1m')[-50:]
+        if detect_choch(candles_m1) == 'bullish':
+            notify("[ENTRY SIGNAL] Price in zone, CHoCH on M1 bullish")
+            return {'direction': 'long', 'entry': price, 'tp': fibo['tp'], 'sl': fibo['sl']}
+    elif fibo['direction'] == 'short' and fibo['levels']['78.6'] <= price <= fibo['levels']['61.8']:
+        candles_m1 = fetch_ohlcv('1m')[-50:]
+        if detect_choch(candles_m1) == 'bearish':
+            notify("[ENTRY SIGNAL] Price in zone, CHoCH on M1 bearish")
+            return {'direction': 'short', 'entry': price, 'tp': fibo['tp'], 'sl': fibo['sl']}
     return None
