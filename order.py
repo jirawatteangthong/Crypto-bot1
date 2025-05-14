@@ -1,58 +1,43 @@
 from utils import connect_okx
-from telegram import trade_notify
+from config import SYMBOL, TRADE_SIZE
+from telegram import notify
+trade = None
 
-def open_trade(signal, capital):
+def open_trade(signal):
+    global trade
     exchange = connect_okx()
     side = 'buy' if signal['direction'] == 'long' else 'sell'
-    pos_side = 'long' if signal['direction'] == 'long' else 'short'
-    amount = 0.1
+    pos_side = 'long' if side == 'buy' else 'short'
 
-    params = {
-        'posSide': pos_side,
-        'reduceOnly': False
+    params = {'posSide': pos_side}
+    exchange.create_market_order(SYMBOL, side, TRADE_SIZE, params)
+
+    trade = {
+        'direction': signal['direction'],
+        'entry': signal['entry'],
+        'tp': signal['tp'],
+        'sl': signal['sl']
     }
 
-    # Market entry
-    exchange.create_order(
-        symbol='BTC/USDT:USDT',
-        type='market',
-        side=side,
-        amount=amount,
-        params=params
-    )
+    notify(f"[ENTRY] {side.upper()} @ {signal['entry']}\nTP: {signal['tp']}\nSL: {signal['sl']}")
 
-    # TP/SL using limit and stop-market
-    tp_order = {
-        'type': 'take_profit_market',
-        'params': {
-            'tpTriggerPx': str(signal['tp']),
-            'tpOrdPx': '-1',  # market
-            'posSide': pos_side
-        }
-    }
-    sl_order = {
-        'type': 'stop_loss_market',
-        'params': {
-            'slTriggerPx': str(signal['sl']),
-            'slOrdPx': '-1',
-            'posSide': pos_side
-        }
-    }
+def close_trade():
+    global trade
+    if not trade:
+        return
 
-    exchange.private_post_trade_order_algo(tp_order['params'])
-    exchange.private_post_trade_order_algo(sl_order['params'])
+    price = fetch_current_price()
+    if trade['direction'] == 'long':
+        if price >= trade['tp'] or price <= trade['sl']:
+            result = "TP" if price >= trade['tp'] else "SL"
+    else:
+        if price <= trade['tp'] or price >= trade['sl']:
+            result = "TP" if price <= trade['tp'] else "SL"
+    else:
+        return
 
-    trade_notify(
-        direction=signal['direction'],
-        entry=signal['price'],
-        size=amount,
-        tp=signal['tp'],
-        sl=signal['sl']
-    )
-    return capital
+    notify(f"[CLOSE] {result} @ {price}")
+    trade = None
 
-def monitor_trades(positions, capital):
-    return positions, capital
-
-def get_open_positions():
-    return []
+def get_open_trade():
+    return trade
