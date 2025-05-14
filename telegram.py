@@ -14,4 +14,4 @@ def trade_notify(direction=None, entry=None, size=None, tp=None, sl=None, result
         notify(f"[CLOSE] {result} | PnL: {pnl:.2f} USDT\nCapital: {new_cap:.2f}")
 
 def health_check(capital):
-    notify(f"[HEALTH CHECK] BOT ALIVE\nCurrent Capital: {capital:.2f} USDT")
+    notify(f"[HEALTH CHECK] BOT ALIVE\nCapital: {capital:.2f} USDT")
