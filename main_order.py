@@ -1,14 +1,19 @@
 import time
 from strategy import get_fibo_zone
 from entry import check_entry_signal
-from telegram import alert_start, alert_error, reset_flags
+from telegram import alert_start, alert_error, reset_flags, send_telegram
 from utils import exchange, SYMBOL
+from config import LEVERAGE, CHECK_INTERVAL  # เพิ่มบรรทัดนี้
 
 def place_order(direction, size, tp, sl):
     side = 'buy' if direction == 'long' else 'sell'
     try:
         exchange.set_leverage(LEVERAGE, SYMBOL)
         order = exchange.create_market_order(SYMBOL, side, size)
+        
+        # แจ้งเตือนเปิดออเดอร์
+        send_telegram(f"✅ เปิดออเดอร์ {side.upper()} ขนาด {size} | TP: {tp:.2f} | SL: {sl:.2f}")
+
         reduce_side = 'sell' if side == 'buy' else 'buy'
         exchange.create_order(SYMBOL, 'take_profit_market', reduce_side, size, None, {
             'triggerPrice': tp,
@@ -33,7 +38,7 @@ def run():
                 signal = check_entry_signal(fibo)
                 if signal:
                     place_order(signal['direction'], signal['size'], signal['tp'], signal['sl'])
-                    fibo = None  # à¸£à¸­à¸§à¸²à¸à¸£à¸­à¸à¹à¸«à¸¡à¹à¸«à¸¥à¸±à¸à¹à¸à¹à¸²à¹à¸à¸£à¸
+                    fibo = None
         except Exception as e:
             alert_error(str(e))
         time.sleep(CHECK_INTERVAL)
