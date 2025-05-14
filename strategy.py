@@ -1,23 +1,16 @@
-import pandas as pd
-from utils import get_ohlcv, detect_bos, get_swing_points, calculate_fibo_levels
+# strategy.py
+def detect_bos(candles):
+    # ใช้เงื่อนไข simple: high หรือ low ทะลุ swing เดิม
+    last = candles[-1]
+    prev = candles[-2]
 
-def analyze_market():
-    df = get_ohlcv()
-    if df is None or len(df) < 50:
-        return None
-
-    trend = detect_bos(df)
-    if not trend:
-        return None
-
-    swing_high, swing_low = get_swing_points(df, trend)
-    fibo = calculate_fibo_levels(swing_high, swing_low, trend)
-
-    current_price = df['close'].iloc[-1]
-
-    if trend == 'uptrend' and current_price <= fibo['62%'] >= fibo['78.6%']:
-        return {'side': 'buy', 'entry': fibo['62%'], 'sl': fibo['110%'], 'tp': fibo['tp']}
-    elif trend == 'downtrend' and current_price >= fibo['62%'] <= fibo['78.6%']:
-        return {'side': 'sell', 'entry': fibo['62%'], 'sl': fibo['110%'], 'tp': fibo['tp']}
-    
+    if last['high'] > prev['high']:
+        return 'up'
+    elif last['low'] < prev['low']:
+        return 'down'
     return None
+
+def get_fibonacci(swing_high, swing_low):
+    fib_62 = swing_low + (swing_high - swing_low) * 0.62
+    fib_110 = swing_low + (swing_high - swing_low) * 1.1
+    return fib_62, fib_110
