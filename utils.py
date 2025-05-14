@@ -1,41 +1,32 @@
-# utils.py
-
 import ccxt
 import time
 from datetime import datetime
-
-from config import API_KEY, API_SECRET, API_PASSPHRASE
+from config import OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSWORD, SYMBOL
 
 def connect_okx():
     return ccxt.okx({
-        'apiKey': API_KEY,
-        'secret': API_SECRET,
-        'password': API_PASSPHRASE,
+        'apiKey': OKX_API_KEY,
+        'secret': OKX_API_SECRET,
+        'password': OKX_API_PASSWORD,
         'enableRateLimit': True,
-        'options': {'defaultType': 'future'},
+        'options': {
+            'defaultType': 'future'
+        }
     })
 
-def fetch_ohlcv(tf='5m', limit=100):
+def fetch_ohlcv(tf='5m'):
     exchange = connect_okx()
-    bars = exchange.fetch_ohlcv('BTC/USDT:USDT', tf, limit=limit)
-    return bars
+    return exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=50)
 
 def fetch_current_price():
     exchange = connect_okx()
-    ticker = exchange.fetch_ticker('BTC/USDT:USDT')
+    ticker = exchange.fetch_ticker(SYMBOL)
     return ticker['last']
 
 def detect_bos(candles):
-    if candles[-1][4] > candles[-5][4]:
+    if candles[-1][4] > candles[-2][4] > candles[-3][4]:
         return 'bullish'
-    elif candles[-1][4] < candles[-5][4]:
-        return 'bearish'
-    return None
-
-def detect_choch(candles):
-    if candles[-1][4] > candles[-2][4] and candles[-2][4] < candles[-3][4]:
-        return 'bullish'
-    elif candles[-1][4] < candles[-2][4] and candles[-2][4] > candles[-3][4]:
+    elif candles[-1][4] < candles[-2][4] < candles[-3][4]:
         return 'bearish'
     return None
 
