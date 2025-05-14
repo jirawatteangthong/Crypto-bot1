@@ -1,15 +1,61 @@
-def detect_bos(candles):
-    # ใช้เงื่อนไข simple: high หรือ low ทะลุ swing เดิม
-    last = candles[-1]
-    prev = candles[-2]
+# strategy.py
 
-    if last['high'] > prev['high']:
-        return 'up'
-    elif last['low'] < prev['low']:
-        return 'down'
-    return None
+from utils import fetch_ohlcv, detect_bos, detect_choch, fetch_current_price
 
-def get_fibonacci(swing_high, swing_low):
-    fib_62 = swing_low + (swing_high - swing_low) * 0.62
-    fib_110 = swing_low + (swing_high - swing_low) * 1.1
-    return fib_62, fib_110
+prev_fibo = None
+
+def get_fibo_zone():
+    global prev_fibo
+
+    h1 = fetch_ohlcv('1h')[-200:]
+    m15 = fetch_ohlcv('15m')[-100:]
+
+    trend = detect_bos(h1)
+    choch_m15 = detect_choch(m15)
+
+    if not trend or not choch_m15 or trend != choch_m15:
+        return None, trend, 'wait'
+
+    highs = [c[2] for c in h1[-70:]]
+    lows = [c[3] for c in h1[-70:]]
+    new_high = max(highs)
+    new_low = min(lows)
+
+    if trend == 'bullish':
+        if prev_fibo:
+            retrace = (fetch_current_price() - prev_fibo['levels']['100']) / (prev_fibo['levels']['0'] - prev_fibo['levels']['100'])
+            if retrace < 0.333:
+                prev_fibo['levels']['0'] = new_high
+                return prev_fibo, trend, 'ok'
+            else:
+                prev_fibo['levels']['100'] = new_low
+
+        fibo = {
+            'direction': 'long',
+            'levels': {
+                '61.8': new_low + 0.618 * (new_high - new_low),
+                '0': new_high,
+                '100': new_low
+            }
+        }
+
+    else:
+        if prev_fibo:
+            retrace = (prev_fibo['levels']['100'] - fetch_current_price()) / (prev_fibo['levels']['100'] - prev_fibo['levels']['0'])
+            if retrace < 0.333:
+                prev_fibo['levels']['0'] = new_low
+                return prev_fibo, trend, 'ok'
+            else:
+                prev_fibo['levels']['100'] = new_high
+
+        fibo = {
+            'direction': 'short',
+            'levels': {
+                '61.8': new_high - 0.618 * (new_high - new_low),
+                '0': new_low,
+                '100': new_high
+            }
+        }
+
+    prev_fibo = fibo
+    return fibo, trend, 'ok'
