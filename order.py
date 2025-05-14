@@ -1,29 +1,34 @@
-from telegram import send_message
+# order.py
 
-current_order = None
+from utils import connect_okx
+from telegram import trade_notify
 
-def open_trade(exchange, direction, entry_price, sl_price, tp_price):
-    global current_order
-    if current_order:
-        return
+def open_trade(signal, capital):
+    exchange = connect_okx()
+    side = 'buy' if signal['direction'] == 'long' else 'sell'
+    amount = 0.1
 
-    side = 'buy' if direction == 'long' else 'sell'
+    params = {'positionSide': 'long' if side == 'buy' else 'short'}
+    order = exchange.create_order(
+        symbol='BTC/USDT:USDT',
+        type='market',
+        side=side,
+        amount=amount,
+        params=params
+    )
 
-    params = {
-        'stopLoss': {'price': sl_price},
-        'takeProfit': {'price': tp_price}
-    }
+    trade_notify(
+        direction=signal['direction'],
+        entry=signal['price'],
+        size=amount,
+        tp=signal['tp'],
+        sl=signal['sl']
+    )
+    return capital
 
-    order = exchange.create_market_order(SYMBOL, side, ORDER_SIZE, params=params)
-    current_order = order
+def monitor_trades(positions, capital):
+    # แนะนำให้ต่อยอดตรงนี้ด้วย unrealized pnl จาก exchange
+    return positions, capital
 
-    send_message(f"เปิดออเดอร์ {direction.upper()} ที่ {entry_price}\nSL: {sl_price}, TP: {tp_price}")
-
-def close_trade(exchange):
-    global current_order
-    if not current_order:
-        return
-
-    exchange.cancel_order(current_order['id'], SYMBOL)
-    send_message("ปิดออเดอร์")
-    current_order = None
+def get_open_positions():
+    return []
