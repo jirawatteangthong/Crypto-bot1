@@ -1,50 +1,45 @@
 # main.py
+
 import time
-from config import SYMBOL, TIMEFRAME, MAX_TRADES_PER_DAY
-from telegram import send_message
-from okx_api import connect_okx
-from strategy import detect_bos, get_fibonacci
-from order import open_trade
-from utils import sleep_until_next_candle, get_today
+from config import *
+from strategy import get_fibo_zone
+from entry import check_entry_signal
+from order import open_trade, monitor_trades, get_open_positions
+from telegram import notify, health_check
+from utils import is_new_day
 
-def fetch_ohlcv(exchange):
-    bars = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=50)
-    return [{'timestamp': b[0], 'open': b[1], 'high': b[2], 'low': b[3], 'close': b[4]} for b in bars]
+capital = START_CAPITAL
+positions = get_open_positions()
+orders_today = 0
+last_health = time.time()
 
-def main():
-    send_message("✅ บอทเทรด BTC Futures เริ่มทำงานแล้ว")
-    exchange = connect_okx()
-    trades_today = 0
-    trade_date = get_today()
+notify("[BOT STARTED] เริ่มทำงานแล้ว")
+for p in positions:
+    notify(f"[RESTORE] ค้างอยู่: {p['direction']} @ {p['price']}")
 
-    while True:
-        sleep_until_next_candle(TIMEFRAME)
+while True:
+    try:
+        if is_new_day():
+            orders_today = 0
+            positions = []
 
-        if get_today() != trade_date:
-            trades_today = 0
-            trade_date = get_today()
+        if orders_today < MAX_TRADES_PER_DAY:
+            fibo, trend, status = get_fibo_zone()
+            if status == 'ok':
+                signal = check_entry_signal(fibo, trend)
+                if signal:
+                    capital = open_trade(signal, capital)
+                    positions.append(signal)
+                    orders_today += 1
 
-        if trades_today >= MAX_TRADES_PER_DAY:
-            continue
+        positions, capital = monitor_trades(positions, capital)
 
-        candles = fetch_ohlcv(exchange)
-        trend = detect_bos(candles)
-        if not trend:
-            continue
+        if time.time() - last_health >= HEALTH_CHECK_HOURS * 3600:
+            health_check(capital)
+            last_health = time.time()
 
-        high = max(c['high'] for c in candles[-10:])
-        low = min(c['low'] for c in candles[-10:])
+        time.sleep(CHECK_INTERVAL)
 
-        if trend == 'up':
-            fib_entry, fib_sl = get_fibonacci(high, low)
-            tp = fib_entry + (fib_sl - fib_entry)
-            open_trade(exchange, 'long', fib_entry, fib_sl, tp)
-        elif trend == 'down':
-            fib_entry, fib_sl = get_fibonacci(low, high)
-            tp = fib_entry - (fib_entry - fib_sl)
-            open_trade(exchange, 'short', fib_entry, fib_sl, tp)
-
-        trades_today += 1
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        notify(f"[ERROR] {str(e)}")
+        time.sleep(60)
