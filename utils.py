@@ -1,41 +1,47 @@
-import ccxt
-import datetime
-from config import *
+import time
+from config import TIMEFRAME
+from okx_api import get_ohlcv
 
-exchange = ccxt.okx({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'password': API_PASSPHRASE,
-    'enableRateLimit': True,
-    'options': {'defaultType': 'swap'}
-})
+daily_summary = []
 
-def fetch_current_price():
-    ticker = exchange.fetch_ticker(SYMBOL)
-    return ticker['last']
+def is_new_day(current_date):
+    return current_date != time.strftime("%Y-%m-%d")
 
-def fetch_ohlcv(tf):
-    return exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=200)
+def get_ohlcv():
+    return get_ohlcv(timeframe=TIMEFRAME)
 
-def detect_bos(candles):
-    highs = [c[2] for c in candles]
-    lows = [c[3] for c in candles]
-    closes = [c[4] for c in candles]
-    if closes[-1] > max(highs[-20:-10]):
-        return 'bullish'
-    elif closes[-1] < min(lows[-20:-10]):
-        return 'bearish'
+def detect_bos(df):
+    recent = df.tail(20)
+    if recent['high'].iloc[-1] > recent['high'].max():
+        return 'uptrend'
+    elif recent['low'].iloc[-1] < recent['low'].min():
+        return 'downtrend'
     return None
 
-def detect_choch(candles):
-    highs = [c[2] for c in candles]
-    lows = [c[3] for c in candles]
-    closes = [c[4] for c in candles]
-    if closes[-2] < max(highs[-20:-10]) and closes[-1] > max(highs[-20:-10]):
-        return 'bullish'
-    elif closes[-2] > min(lows[-20:-10]) and closes[-1] < min(lows[-20:-10]):
-        return 'bearish'
-    return None
+def get_swing_points(df, trend):
+    if trend == 'uptrend':
+        low = df['low'].min()
+        high = df['high'].max()
+    else:
+        high = df['high'].max()
+        low = df['low'].min()
+    return high, low
 
-def is_new_day():
-    return datetime.datetime.utcnow().hour == 0
+def calculate_fibo_levels(high, low, trend):
+    if trend == 'uptrend':
+        fib_62 = low + 0.618 * (high - low)
+        fib_110 = high + 0.1 * (high - low)
+        tp = fib_62 + (fib_110 - fib_62)
+    else:
+        fib_62 = high - 0.618 * (high - low)
+        fib_110 = low - 0.1 * (high - low)
+        tp = fib_62 - (fib_62 - fib_110)
+    return {'62%': round(fib_62, 2), '110%': round(fib_110, 2), 'tp': round(tp, 2)}
+
+def summarize_daily_trades():
+    total_pnl = sum([t['pnl'] for t in daily_summary])
+    total_trades = len(daily_summary)
+    msg = f"สรุปผลเทรดวันนี้:\nจำนวนไม้: {total_trades}\nรวมกำไร/ขาดทุน: {total_pnl:.2f} USDT"
+    from telegram import send_message
+    send_message(msg)
+    daily_summary.clear()
