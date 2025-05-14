@@ -8,13 +8,12 @@ def open_trade(signal, capital):
     side = 'buy' if signal['direction'] == 'long' else 'sell'
     amount = 0.1
 
-    params = {'positionSide': 'long' if side == 'buy' else 'short'}
     order = exchange.create_order(
         symbol='BTC/USDT:USDT',
         type='market',
         side=side,
-        amount=amount,
-        params=params
+        amount=amount
+        # ไม่ต้องมี params
     )
 
     trade_notify(
@@ -27,7 +26,7 @@ def open_trade(signal, capital):
     return capital
 
 def monitor_trades(positions, capital):
-    # แนะนำให้ต่อยอดตรงนี้ด้วย unrealized pnl จาก exchange
+    # ยังไม่ได้ implement PnL/TP/SL
     return positions, capital
 
 def get_open_positions():
