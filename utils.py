@@ -1,5 +1,3 @@
-# utils.py
-import time
 from datetime import datetime
 
 def get_today():
