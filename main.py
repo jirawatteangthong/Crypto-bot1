@@ -1,5 +1,3 @@
-# main.py
-import time
 from config import SYMBOL, TIMEFRAME, MAX_TRADES_PER_DAY
 from telegram import send_message
 from okx_api import connect_okx
