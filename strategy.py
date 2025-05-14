@@ -1,66 +1,50 @@
 from utils import fetch_ohlcv, detect_bos, detect_choch
-from telegram import notify
+from telegram import alert_choch_m15, alert_fibo_drawn
 
 last_fibo = {'high': None, 'low': None, 'direction': None}
 
 def get_fibo_zone():
-    global last_fibo
-    candles_h1 = fetch_ohlcv('1h')[-200:]
-    candles_m15 = fetch_ohlcv('15m')[-70:]
+    h1 = fetch_ohlcv('1h')[-200:]
+    m15 = fetch_ohlcv('15m')[-70:]
 
-    trend = detect_bos(candles_h1)
-    choch_m15 = detect_choch(candles_m15)
+    trend = detect_bos(h1)
+    choch = detect_choch(m15)
+    if not trend or not choch or choch != trend:
+        return None
 
-    if not trend or not choch_m15 or choch_m15 != trend:
-        return None, trend, 'wait'
-
-    highs = [c[2] for c in candles_h1[-70:]]
-    lows = [c[3] for c in candles_h1[-70:]]
-
+    highs = [c[2] for c in h1[-70:]]
+    lows = [c[3] for c in h1[-70:]]
     high = max(highs)
     low = min(lows)
 
-    if last_fibo['high'] and last_fibo['low']:
-        fib_range = abs(last_fibo['high'] - last_fibo['low'])
-        retracement = abs(candles_h1[-1][4] - last_fibo['low']) / fib_range * 100 if trend == 'bullish' else abs(candles_h1[-1][4] - last_fibo['high']) / fib_range * 100
-        if retracement < 33.33:
-            if trend == 'bullish' and high > last_fibo['high']:
-                last_fibo['high'] = high
-            elif trend == 'bearish' and low < last_fibo['low']:
-                last_fibo['low'] = low
-        else:
-            if trend == 'bullish':
-                last_fibo['low'] = low
-                last_fibo['high'] = high
-            else:
-                last_fibo['high'] = high
-                last_fibo['low'] = low
-    else:
-        last_fibo['high'] = high
-        last_fibo['low'] = low
-        last_fibo['direction'] = trend
-
-    notify(f"[NEW FIBO] Direction: {trend.upper()}\nLow={last_fibo['low']}\nHigh={last_fibo['high']}")
+    alert_choch_m15(choch)
+    alert_fibo_drawn(low, high)
 
     if trend == 'bullish':
         fibo = {
             'direction': 'long',
             'levels': {
-                '61.8': last_fibo['low'] + 0.618 * (last_fibo['high'] - last_fibo['low']),
-                '78.6': last_fibo['low'] + 0.786 * (last_fibo['high'] - last_fibo['low'])
+                '61.8': low + 0.618 * (high - low),
+                '78.6': low + 0.786 * (high - low),
+                '33.3': low + 0.333 * (high - low)
             },
-            'tp': last_fibo['high'] - 10,
-            'sl': last_fibo['low'] - 10
+            'tp': high - 10,
+            'sl': low - 10,
+            'low': low,
+            'high': high
         }
     else:
         fibo = {
             'direction': 'short',
             'levels': {
-                '61.8': last_fibo['high'] - 0.618 * (last_fibo['high'] - last_fibo['low']),
-                '78.6': last_fibo['high'] - 0.786 * (last_fibo['high'] - last_fibo['low'])
+                '61.8': high - 0.618 * (high - low),
+                '78.6': high - 0.786 * (high - low),
+                '33.3': high - 0.333 * (high - low)
             },
-            'tp': last_fibo['low'] + 10,
-            'sl': last_fibo['high'] + 10
+            'tp': low + 10,
+            'sl': high + 10,
+            'low': high,
+            'high': low
         }
 
-    return fibo, trend, 'ok'
+    return fibo
