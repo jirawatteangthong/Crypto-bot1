@@ -1,4 +1,3 @@
-# strategy.py
 def detect_bos(candles):
     # ใช้เงื่อนไข simple: high หรือ low ทะลุ swing เดิม
     last = candles[-1]
